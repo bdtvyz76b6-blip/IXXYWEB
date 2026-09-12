@@ -1,1400 +1,563 @@
-import base64
 import os
-import secrets
+import html
+import logging
 from datetime import datetime, timezone
 from urllib.parse import quote
-import requests
-from dotenv import load_dotenv
-from flask import Flask, Response, redirect, request, session
-from database import (
-    create_payment,
-    create_site_user,
-    get_user,
-    get_user_by_login,
-    process_paid_payment,
-    save_subscription,
-    subscription_active,
-    use_promocode,
-    use_trial,
+from flask import (
+    Flask,
+    request,
+    redirect,
+    render_template,
+    abort,
+    jsonify,
 )
+from dotenv import load_dotenv
 load_dotenv()
+from database import (
+    get_user,
+    get_subscription_content,
+    create_payment,
+    process_paid_payment,
+    update_payment_status,
+)
+from cashera_api import create_cashera_payment
 # ============================================================
 # CONFIG
 # ============================================================
-app = Flask(__name__)
-app.secret_key = os.getenv(
-    "SECRET_KEY",
-    secrets.token_hex(32)
-)
+APP_NAME = "☂️ ixxy VPN"
 PUBLIC_SITE_URL = os.getenv(
     "PUBLIC_SITE_URL",
-    "https://ixxyweb.onrender.com"
+    "https://ixxyweb.onrender.com",
 ).rstrip("/")
 SUBSCRIPTION_PREFIX = os.getenv(
     "SUBSCRIPTION_PREFIX",
-    "2ix847xy"
+    "2ix847xy",
 )
+SUPPORT_URL = os.getenv(
+    "SUPPORT_URL",
+    "https://t.me/rusrodyyya",
+).strip()
+GITHUB_RAW_BASE = (
+    "https://raw.githubusercontent.com/"
+    "bdtvyz76b6-blip/vpn-sub/main/users"
+)
+HAPP_BASE = "https://happ.vpnbypass.click/?url="
 # ============================================================
-# GITHUB
-# ============================================================
-GITHUB_TOKEN = os.getenv(
-    "GITHUB_TOKEN",
-    ""
-)
-GITHUB_OWNER = os.getenv(
-    "GITHUB_OWNER",
-    "bdtvyz76b6-blip"
-)
-GITHUB_REPO = os.getenv(
-    "GITHUB_REPO",
-    "vpn-sub"
-)
-GITHUB_BRANCH = os.getenv(
-    "GITHUB_BRANCH",
-    "main"
-)
-GITHUB_SERVERS_FILE = os.getenv(
-    "GITHUB_SERVERS_FILE",
-    "servers.txt"
-)
-# ============================================================
-# CASHERA
-# ============================================================
-CASHERA_API_KEY = os.getenv(
-    "CASHERA_API_KEY",
-    ""
-)
-CASHERA_URL = (
-    "https://api.cashera.cash/api/v1/"
-    "integration/transactions"
-)
-# ============================================================
-# ТАРИФЫ
+# TARIFFS
 # ============================================================
 TARIFFS = {
-    30: 129,
-    90: 379,
-    180: 659,
-    365: 1089,
+    "30": {
+        "days": 30,
+        "amount": 129,
+        "title": "1 месяц",
+    },
+    "90": {
+        "days": 90,
+        "amount": 379,
+        "title": "3 месяца",
+    },
+    "180": {
+        "days": 180,
+        "amount": 659,
+        "title": "6 месяцев",
+    },
+    "365": {
+        "days": 365,
+        "amount": 1089,
+        "title": "12 месяцев",
+    },
 }
 # ============================================================
-# CSS
+# FLASK
 # ============================================================
-CSS = """
-* {
-    box-sizing: border-box;
-}
-body {
-    margin: 0;
-    background:
-        radial-gradient(
-            circle at top,
-            #21113d 0,
-            #0b0811 38%,
-            #07060a 100%
-        );
-    color: #ffffff;
-    font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        Arial,
-        sans-serif;
-    min-height: 100vh;
-}
-a {
-    color: inherit;
-    text-decoration: none;
-}
-button,
-input {
-    font: inherit;
-}
-.wrap {
-    width: 100%;
-    max-width: 920px;
-    margin: auto;
-    padding: 20px;
-}
-.nav {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 0 35px;
-}
-.logo {
-    font-size: 22px;
-    font-weight: 900;
-}
-.nav-btn {
-    display: inline-block;
-    padding: 10px 15px;
-    border-radius: 12px;
-    border: 1px solid #30243e;
-    background: #11101a;
-    color: #ddd;
-}
-.hero {
-    text-align: center;
-    padding: 45px 10px 55px;
-}
-.umbrella {
-    font-size: 64px;
-}
-h1 {
-    font-size: 54px;
-    margin: 12px 0;
-    background:
-        linear-gradient(
-            90deg,
-            #ffffff,
-            #b779ff
-        );
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-}
-h2 {
-    margin-top: 10px;
-}
-.hero p {
-    color: #9994a4;
-    line-height: 1.7;
-}
-.card {
-    background: rgba(18, 15, 27, .94);
-    border: 1px solid #2c2438;
-    border-radius: 22px;
-    padding: 24px;
-    margin: 16px 0;
-    box-shadow: 0 20px 70px rgba(0,0,0,.25);
-}
-.grid {
-    display: grid;
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(180px, 1fr)
-        );
-    gap: 12px;
-}
-.tariff {
-    background: #11101a;
-    border: 1px solid #2d2638;
-    border-radius: 18px;
-    padding: 20px;
-}
-.tariff-days {
-    color: #9993a3;
-}
-.price {
-    font-size: 29px;
-    font-weight: 900;
-    margin-top: 8px;
-}
-.btn {
-    display: inline-block;
-    border: 0;
-    border-radius: 13px;
-    padding: 13px 18px;
-    background:
-        linear-gradient(
-            135deg,
-            #974cff,
-            #5b22d3
-        );
-    color: #fff;
-    font-weight: 800;
-    cursor: pointer;
-}
-.btn-secondary {
-    display: inline-block;
-    border: 1px solid #342b42;
-    border-radius: 13px;
-    padding: 13px 18px;
-    background: #15121d;
-    color: #eee;
-    cursor: pointer;
-}
-.input {
-    width: 100%;
-    padding: 14px;
-    margin: 7px 0 12px;
-    border: 1px solid #332a40;
-    border-radius: 13px;
-    background: #0c0a10;
-    color: #fff;
-    outline: none;
-}
-.input:focus {
-    border-color: #8c4cff;
-}
-.status {
-    font-size: 30px;
-    font-weight: 900;
-    margin-top: 8px;
-}
-.active {
-    color: #8dffb4;
-}
-.expired {
-    color: #ff7d8a;
-}
-.muted {
-    color: #8e8998;
-}
-.error {
-    color: #ff7e8b;
-    margin: 10px 0;
-}
-.success {
-    color: #8dffb4;
-    margin: 10px 0;
-}
-.center {
-    text-align: center;
-}
-.link-box {
-    display: flex;
-    overflow: hidden;
-    border: 1px solid #30283b;
-    border-radius: 13px;
-    background: #0b0910;
-}
-.link-box input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    outline: none;
-    padding: 13px;
-    background: transparent;
-    color: #aaa;
-}
-.link-box button {
-    border: 0;
-    padding: 0 16px;
-    cursor: pointer;
-    background: #211b2b;
-    color: #fff;
-}
-.link-box button:hover {
-    background: #30243d;
-}
-.footer {
-    text-align: center;
-    color: #4f4a57;
-    padding: 35px 0 10px;
-}
-.small {
-    font-size: 13px;
-}
-.tariff-form {
-    margin: 0;
-}
-.tariff-form button {
-    width: 100%;
-}
-@media (max-width: 600px) {
-    h1 {
-        font-size: 40px;
-    }
-    .wrap {
-        padding: 15px;
-    }
-    .hero {
-        padding-top: 25px;
-    }
-    .link-box {
-        display: block;
-    }
-    .link-box input {
-        width: 100%;
-    }
-    .link-box button {
-        width: 100%;
-        padding: 13px;
-    }
-}
-"""
+app = Flask(
+    __name__,
+    template_folder="templates",
+)
+app.config["JSON_AS_ASCII"] = False
+logging.basicConfig(
+    level=logging.INFO,
+)
+log = logging.getLogger("ixxy-web")
 # ============================================================
-# PAGE
+# TIME
 # ============================================================
-def page(title, body):
-    if session.get("uid"):
-        cabinet = (
-            '<a class="nav-btn" href="/cabinet">'
-            'Кабинет'
-            '</a>'
+def normalize_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    try:
+        value = str(value).strip()
+        if not value:
+            return None
+        value = value.replace(
+            "Z",
+            "+00:00",
         )
-    else:
-        cabinet = (
-            '<a class="nav-btn" href="/login">'
-            'Войти'
-            '</a>'
+        result = datetime.fromisoformat(value)
+        if result.tzinfo is None:
+            result = result.replace(
+                tzinfo=timezone.utc
+            )
+        return result.astimezone(
+            timezone.utc
         )
-    return f"""
-<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta
-    name="viewport"
-    content="width=device-width,initial-scale=1"
->
-<meta
-    name="theme-color"
-    content="#0b0811"
->
-<title>{title} — ixxy VPN</title>
-<style>
-{CSS}
-</style>
-</head>
-<body>
-<div class="wrap">
-<div class="nav">
-<a class="logo" href="/">
-☂️ ixxy VPN
-</a>
-<div>
-{cabinet}
-</div>
-</div>
-{body}
-<div class="footer">
-☂️ ixxy VPN
-</div>
-</div>
-</body>
-</html>
-"""
-# ============================================================
-# CSRF
-# ============================================================
-def csrf_token():
-    if "csrf" not in session:
-        session["csrf"] = secrets.token_urlsafe(32)
-    return session["csrf"]
-def csrf_ok():
-    token = request.form.get(
-        "csrf",
-        ""
+    except Exception:
+        return None
+def subscription_info(user):
+    if not user:
+        return {
+            "active": False,
+            "until": None,
+            "until_text": "—",
+            "days": 0,
+        }
+    until = normalize_datetime(
+        user.get("subscription_until")
     )
-    saved = session.get(
-        "csrf",
-        ""
+    if not until:
+        return {
+            "active": False,
+            "until": None,
+            "until_text": "—",
+            "days": 0,
+        }
+    now = datetime.now(timezone.utc)
+    if until <= now:
+        return {
+            "active": False,
+            "until": until,
+            "until_text": until.strftime(
+                "%d.%m.%Y"
+            ),
+            "days": 0,
+        }
+    seconds = (
+        until - now
+    ).total_seconds()
+    days = int(
+        seconds // 86400
     )
-    if not token or not saved:
-        return False
-    return secrets.compare_digest(
-        token,
-        saved
+    return {
+        "active": True,
+        "until": until,
+        "until_text": until.strftime(
+            "%d.%m.%Y"
+        ),
+        "days": max(1, days),
+    }
+# ============================================================
+# TOKEN
+# ============================================================
+def parse_token(token):
+    if not token:
+        return None
+    token = str(token).strip()
+    if not token.startswith(
+        SUBSCRIPTION_PREFIX
+    ):
+        return None
+    raw_id = token[
+        len(SUBSCRIPTION_PREFIX):
+    ]
+    if not raw_id.isdigit():
+        return None
+    try:
+        return int(raw_id)
+    except Exception:
+        return None
+def make_token(user_id):
+    return (
+        f"{SUBSCRIPTION_PREFIX}"
+        f"{int(user_id)}"
     )
-# ============================================================
-# GITHUB
-# ============================================================
 def subscription_url(user_id):
     return (
-        f"{PUBLIC_SITE_URL}/s/"
-        f"{SUBSCRIPTION_PREFIX}{user_id}"
+        f"{PUBLIC_SITE_URL}/sub/"
+        f"{make_token(user_id)}"
     )
-def github_api_url(path):
+def github_url(user_id):
     return (
-        f"https://api.github.com/repos/"
-        f"{GITHUB_OWNER}/"
-        f"{GITHUB_REPO}/contents/{path}"
+        f"{GITHUB_RAW_BASE}/"
+        f"{int(user_id)}.txt"
     )
-def get_servers():
-    url = (
-        f"https://raw.githubusercontent.com/"
-        f"{GITHUB_OWNER}/"
-        f"{GITHUB_REPO}/"
-        f"{GITHUB_BRANCH}/"
-        f"{GITHUB_SERVERS_FILE}"
-    )
-    try:
-        response = requests.get(
+def happ_url(user_id):
+    url = subscription_url(user_id)
+    return (
+        HAPP_BASE +
+        quote(
             url,
-            timeout=15
+            safe=""
         )
-        if response.ok:
-            return response.text.strip()
-    except Exception as e:
-        print(
-            "Get servers error:",
-            repr(e)
-        )
-    return ""
-def make_subscription_content(user_id):
+    )
+# ============================================================
+# USER
+# ============================================================
+def get_user_from_token(token):
+    user_id = parse_token(token)
+    if not user_id:
+        return None, None
     user = get_user(user_id)
     if not user:
-        return ""
-    active = subscription_active(
-        user["subscription_until"]
-    )
-    if active:
-        until = (
-            user["subscription_until"]
-            .astimezone(timezone.utc)
-            .strftime("%d.%m.%Y")
-        )
-        announce = (
-            "#announce: "
-            f"🟢 Подписка активна • до {until} "
-            "• ☂️ ixxy VPN"
-        )
-        servers = get_servers()
-        return f"""#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️
-#profile-update-interval: 1
-#subscription-userinfo: upload=0; download=0; total=0
-#hide-settings: true
-{announce}
-{servers}
-"""
-    return """#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️
-#profile-update-interval: 1
-#subscription-userinfo: upload=0; download=0; total=0
-#hide-settings: true
-#announce: 🔴 Подписка не активна • Продлите подписку на сайте ixxy VPN
-"""
-def sync_github(user_id):
-    if not GITHUB_TOKEN:
-        print("GITHUB_TOKEN не настроен")
-        return False
-    content = make_subscription_content(
-        user_id
-    )
-    if not content:
-        return False
-    user = get_user(user_id)
-    if (
-        user
-        and user.get("subscription_content") == content
-        and user.get("subscription_link")
-    ):
-        return True
-    path = f"users/{user_id}.txt"
-    api_url = github_api_url(path)
-    headers = {
-        "Authorization":
-            f"Bearer {GITHUB_TOKEN}",
-        "Accept":
-            "application/vnd.github+json",
-        "X-GitHub-Api-Version":
-            "2022-11-28",
-    }
-    try:
-        sha = None
-        existing = requests.get(
-            api_url,
-            headers=headers,
-            timeout=15
-        )
-        if existing.ok:
-            sha = (
-                existing.json()
-                .get("sha")
-            )
-        data = {
-            "message":
-                f"ixxy subscription {user_id}",
-            "content":
-                base64.b64encode(
-                    content.encode("utf-8")
-                ).decode("ascii"),
-            "branch":
-                GITHUB_BRANCH,
-        }
-        if sha:
-            data["sha"] = sha
-        response = requests.put(
-            api_url,
-            headers=headers,
-            json=data,
-            timeout=20
-        )
-        if not response.ok:
-            print(
-                "GitHub error:",
-                response.status_code,
-                response.text
-            )
-            return False
-        save_subscription(
-            user_id,
-            subscription_url(user_id),
-            content
-        )
-        return True
-    except Exception as e:
-        print(
-            "GitHub sync error:",
-            repr(e)
-        )
-        return False
+        return None, user_id
+    return user, user_id
 # ============================================================
 # HOME
 # ============================================================
 @app.route("/")
-def index():
-    tariffs = ""
-    for days, price in TARIFFS.items():
-        tariffs += f"""
-<div class="tariff">
-<div class="tariff-days">
-{days} дней
-</div>
-<div class="price">
-{price} ₽
-</div>
-<p class="muted">
-Полный доступ к ixxy VPN
-</p>
-</div>
-"""
-    return page(
-        "Главная",
-        f"""
-<section class="hero">
-<div class="umbrella">
-☂️
-</div>
-<h1>
-ixxy VPN
-</h1>
-<p>
-Быстрый и простой VPN.<br>
-Подключение через Happ без лишних настроек.
-</p>
-<a
-    class="btn"
-    href="/register"
->
-Создать кабинет
-</a>
-</section>
-<h2>
-Тарифы
-</h2>
-<div class="grid">
-{tariffs}
-</div>
-<section class="card center">
-<h3>
-Уже есть кабинет?
-</h3>
-<p class="muted">
-Войдите по Telegram ID или @username.
-Пароль не нужен.
-</p>
-<a
-    class="btn-secondary"
-    href="/login"
->
-Войти
-</a>
-</section>
-"""
+def home():
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        support_url=SUPPORT_URL,
+        tariffs=TARIFFS,
+        public_url=PUBLIC_SITE_URL,
+        token=None,
+        user=None,
+        info=None,
+        subscription_url=None,
+        github_url=None,
+        happ_url=None,
+        message=None,
+        error=None,
     )
-# ============================================================
-# REGISTER
-# ============================================================
-@app.route(
-    "/register",
-    methods=["GET", "POST"]
-)
-def register():
-    error = ""
-    if request.method == "POST":
-        if not csrf_ok():
-            return "CSRF error", 403
-        login_value = (
-            request.form
-            .get("telegram", "")
-            .strip()
-        )
-        name = (
-            request.form
-            .get("name", "")
-            .strip()
-            or "Пользователь"
-        )
-        if not login_value:
-            error = (
-                "Введите Telegram ID "
-                "или username."
-            )
-        else:
-            try:
-                user = get_user_by_login(
-                    login_value
-                )
-                if user:
-                    user_id = int(
-                        user["user_id"]
-                    )
-                else:
-                    user_id = create_site_user(
-                        login_value,
-                        name
-                    )
-                session["uid"] = user_id
-                sync_github(
-                    user_id
-                )
-                return redirect(
-                    "/cabinet"
-                )
-            except Exception as e:
-                print(
-                    "Create user error:",
-                    repr(e)
-                )
-                error = (
-                    "Не удалось создать кабинет."
-                )
-    error_html = (
-        f'<div class="error">{error}</div>'
-        if error
-        else ""
-    )
-    return page(
-        "Создание кабинета",
-        f"""
-<section class="card">
-<h2>
-Создание кабинета
-</h2>
-<p class="muted">
-Введите Telegram ID или @username.
-Пароль не нужен.
-</p>
-{error_html}
-<form method="post">
-<input
-    class="input"
-    name="telegram"
-    placeholder="Telegram ID или @username"
-    autocomplete="off"
-    required
->
-<input
-    class="input"
-    name="name"
-    placeholder="Ваше имя"
->
-<input
-    type="hidden"
-    name="csrf"
-    value="{csrf_token()}"
->
-<button
-    class="btn"
-    type="submit"
->
-Создать кабинет
-</button>
-</form>
-</section>
-<p class="center muted">
-Уже есть кабинет?
-<a href="/login">
-Войти
-</a>
-</p>
-"""
-    )
-# ============================================================
-# LOGIN
-# ============================================================
-@app.route(
-    "/login",
-    methods=["GET", "POST"]
-)
-def login():
-    error = ""
-    if request.method == "POST":
-        if not csrf_ok():
-            return "CSRF error", 403
-        login_value = (
-            request.form
-            .get("telegram", "")
-            .strip()
-        )
-        if not login_value:
-            error = (
-                "Введите Telegram ID "
-                "или username."
-            )
-        else:
-            try:
-                user = get_user_by_login(
-                    login_value
-                )
-                if not user:
-                    user_id = create_site_user(
-                        login_value,
-                        "Пользователь"
-                    )
-                else:
-                    user_id = int(
-                        user["user_id"]
-                    )
-                session["uid"] = user_id
-                sync_github(
-                    user_id
-                )
-                return redirect(
-                    "/cabinet"
-                )
-            except Exception as e:
-                print(
-                    "Login error:",
-                    repr(e)
-                )
-                error = (
-                    "Не удалось выполнить вход."
-                )
-    error_html = (
-        f'<div class="error">{error}</div>'
-        if error
-        else ""
-    )
-    return page(
-        "Вход",
-        f"""
-<section class="card">
-<h2>
-Вход в кабинет
-</h2>
-<p class="muted">
-Введите Telegram ID или @username.
-Пароль не нужен.
-</p>
-{error_html}
-<form method="post">
-<input
-    class="input"
-    name="telegram"
-    placeholder="Telegram ID или @username"
-    autocomplete="off"
-    required
->
-<input
-    type="hidden"
-    name="csrf"
-    value="{csrf_token()}"
->
-<button
-    class="btn"
-    type="submit"
->
-Войти
-</button>
-</form>
-</section>
-<p class="center muted">
-Нет кабинета?
-<a href="/register">
-Создать кабинет
-</a>
-</p>
-"""
-    )
-# ============================================================
-# LOGOUT
-# ============================================================
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
 # ============================================================
 # CABINET
 # ============================================================
-@app.route("/cabinet")
-def cabinet():
-    user_id = session.get("uid")
-    if not user_id:
-        return redirect("/login")
-    user = get_user(user_id)
+@app.route(
+    "/s/<token>",
+    methods=["GET"],
+)
+def cabinet(token):
+    user, user_id = get_user_from_token(
+        token
+    )
     if not user:
-        session.clear()
-        return redirect(
-            "/login"
-        )
-    sync_github(
+        abort(404)
+    info = subscription_info(
+        user
+    )
+    sub_url = subscription_url(
         user_id
     )
-    # Получаем пользователя заново,
-    # потому что sync_github мог сохранить ссылку.
-    user = get_user(user_id)
-    active = subscription_active(
-        user["subscription_until"]
-    )
-    if user["subscription_until"]:
-        until = (
-            user["subscription_until"]
-            .astimezone(timezone.utc)
-            .strftime("%d.%m.%Y %H:%M")
-        )
-    else:
-        until = "—"
-    days_left = 0
-    if active:
-        days_left = max(
-            0,
-            (
-                user["subscription_until"]
-                .astimezone(timezone.utc)
-                - datetime.now(timezone.utc)
-            ).days
-        )
-    link = (
-        user["subscription_link"]
-        or subscription_url(user_id)
-    )
-    username = user.get(
-        "username"
-    )
-    if username:
-        display_name = (
-            "@"
-            + str(username).lstrip("@")
-        )
-    else:
-        display_name = (
-            "Telegram ID: "
-            + str(user_id)
-        )
-    tariff_buttons = ""
-    for days, price in TARIFFS.items():
-        tariff_buttons += f"""
-<form
-    method="post"
-    action="/buy"
-    class="tariff-form"
->
-<input
-    type="hidden"
-    name="days"
-    value="{days}"
->
-<input
-    type="hidden"
-    name="csrf"
-    value="{csrf_token()}"
->
-<button
-    class="btn-secondary"
-    type="submit"
->
-{days} дней — {price} ₽
-</button>
-</form>
-"""
-    trial = ""
-    if not user["trial_used"]:
-        trial = f"""
-<section class="card">
-<h3>
-🎁 Бесплатный пробный период
-</h3>
-<p class="muted">
-1 день бесплатно для нового аккаунта.
-</p>
-<form
-    method="post"
-    action="/trial"
->
-<input
-    type="hidden"
-    name="csrf"
-    value="{csrf_token()}"
->
-<button
-    class="btn-secondary"
-    type="submit"
->
-Получить 1 день бесплатно
-</button>
-</form>
-</section>
-"""
-    return page(
-        "Кабинет",
-        f"""
-<section class="hero">
-<div class="muted">
-Личный кабинет
-</div>
-<h1>
-☂️
-</h1>
-<p>
-{display_name}
-</p>
-</section>
-<section class="card">
-<div class="muted">
-Состояние подписки
-</div>
-<div class="status {
-    "active" if active else "expired"
-}">
-{
-    "Активна"
-    if active
-    else
-    "Не активна"
-}
-</div>
-<p class="muted">
-До: {until}
-<br>
-Осталось: {days_left} дн.
-</p>
-<a
-    class="btn"
-    href="happ://add/{quote(link, safe='')}"
->
-Открыть в Happ
-</a>
-</section>
-<section class="card">
-<h3>
-Ссылка подписки
-</h3>
-<div class="link-box">
-<input
-    id="sub"
-    value="{link}"
-    readonly
->
-<button
-    type="button"
-    onclick="
-        navigator.clipboard
-        .writeText(
-            document
-            .getElementById('sub')
-            .value
-        )
-    "
->
-Копировать
-</button>
-</div>
-<p class="muted small">
-Эта ссылка остаётся постоянной.
-</p>
-</section>
-<section class="card">
-<h3>
-Продлить подписку
-</h3>
-<div class="grid">
-{tariff_buttons}
-</div>
-</section>
-<section class="card">
-<h3>
-Промокод
-</h3>
-<form
-    method="post"
-    action="/promo"
->
-<input
-    class="input"
-    name="code"
-    placeholder="Введите промокод"
-    autocomplete="off"
-    required
->
-<input
-    type="hidden"
-    name="csrf"
-    value="{csrf_token()}"
->
-<button
-    class="btn-secondary"
-    type="submit"
->
-Активировать
-</button>
-</form>
-</section>
-{trial}
-<br>
-<a
-    class="nav-btn"
-    href="/logout"
->
-Выйти
-</a>
-"""
-    )
-# ============================================================
-# BUY
-# ============================================================
-@app.route(
-    "/buy",
-    methods=["POST"]
-)
-def buy():
-    user_id = session.get("uid")
-    if not user_id:
-        return redirect("/login")
-    if not csrf_ok():
-        return "Forbidden", 403
-    try:
-        days = int(
-            request.form.get(
-                "days",
-                "0"
-            )
-        )
-    except ValueError:
-        return "Bad tariff", 400
-    if days not in TARIFFS:
-        return "Bad tariff", 400
-    if not CASHERA_API_KEY:
-        return (
-            "CASHERA_API_KEY не настроен",
-            500
-        )
-    amount = TARIFFS[days]
-    external_id = (
-        f"ixxy_{user_id}_"
-        f"{secrets.token_hex(8)}"
-    )
-    payload = {
-        "amount": amount * 100,
-        "currency": "RUB",
-        "payment_method": "sbp",
-        "external_id": external_id,
-        "description":
-            f"ixxy VPN — {days} дней",
-        "callback_url":
-            f"{PUBLIC_SITE_URL}"
-            "/webhook/cashera",
-        "success_url":
-            f"{PUBLIC_SITE_URL}"
-            "/payment/success",
-        "fail_url":
-            f"{PUBLIC_SITE_URL}"
-            "/payment/fail",
-    }
-    try:
-        response = requests.post(
-            CASHERA_URL,
-            headers={
-                "X-Api-Key":
-                    CASHERA_API_KEY,
-                "Content-Type":
-                    "application/json",
-            },
-            json=payload,
-            timeout=20
-        )
-        data = response.json()
-        transaction = data.get(
-            "transaction",
-            data
-        )
-        payment_id = (
-            transaction.get("uuid")
-            or transaction.get("id")
-        )
-        payment_url = (
-            transaction.get("payment_url")
-            or transaction.get("url")
-        )
-        if not payment_id:
-            print(
-                "CasheRa response:",
-                data
-            )
-            return (
-                "CasheRa не вернула ID платежа.",
-                502
-            )
-        if not payment_url:
-            print(
-                "CasheRa response:",
-                data
-            )
-            return (
-                "CasheRa не вернула ссылку "
-                "на оплату.",
-                502
-            )
-        create_payment(
-            user_id,
-            payment_id,
-            external_id,
-            amount,
-            days
-        )
-        return redirect(
-            payment_url
-        )
-    except Exception as e:
-        print(
-            "CasheRa error:",
-            repr(e)
-        )
-        return (
-            "Ошибка создания платежа.",
-            502
-        )
-# ============================================================
-# CASHERA WEBHOOK
-# ============================================================
-@app.route(
-    "/webhook/cashera",
-    methods=["POST"]
-)
-def cashera_webhook():
-    data = request.get_json(
-        silent=True
-    ) or {}
-    transaction = data.get(
-        "transaction",
-        data
-    )
-    event = (
-        data.get("event")
-        or data.get("type")
-    )
-    payment_id = (
-        transaction.get("uuid")
-        or transaction.get("id")
-    )
-    status = str(
-        transaction.get(
-            "status",
-            ""
-        )
-    ).lower()
-    if (
-        event
-        and event != "transaction.status_updated"
-    ):
-        return {
-            "ok": True
-        }
-    if (
-        status != "paid"
-        or not payment_id
-    ):
-        return {
-            "ok": True
-        }
-    try:
-        result = process_paid_payment(
-            payment_id
-        )
-        if result:
-            user_id = result[0]
-            sync_github(
-                user_id
-            )
-        return {
-            "ok": True
-        }
-    except Exception as e:
-        print(
-            "Webhook error:",
-            repr(e)
-        )
-        return {
-            "ok": False
-        }, 500
-# ============================================================
-# PROMO
-# ============================================================
-@app.route(
-    "/promo",
-    methods=["POST"]
-)
-def promo():
-    user_id = session.get("uid")
-    if not user_id:
-        return redirect("/login")
-    if not csrf_ok():
-        return "Forbidden", 403
-    code = request.form.get(
-        "code",
-        ""
-    )
-    until, error = use_promocode(
-        user_id,
-        code
-    )
-    if error:
-        return page(
-            "Промокод",
-            f"""
-<section class="card">
-<div class="error">
-{error}
-</div>
-<a
-    class="btn"
-    href="/cabinet"
->
-Назад
-</a>
-</section>
-"""
-        )
-    sync_github(
+    gh_url = github_url(
         user_id
     )
-    return redirect(
-        "/cabinet"
+    h_url = happ_url(
+        user_id
     )
-# ============================================================
-# TRIAL
-# ============================================================
-@app.route(
-    "/trial",
-    methods=["POST"]
-)
-def trial():
-    user_id = session.get("uid")
-    if not user_id:
-        return redirect("/login")
-    if not csrf_ok():
-        return "Forbidden", 403
-    until = use_trial(
-        user_id,
-        1
-    )
-    if until:
-        sync_github(
-            user_id
-        )
-    return redirect(
-        "/cabinet"
-    )
-# ============================================================
-# PAYMENT SUCCESS
-# ============================================================
-@app.route("/payment/success")
-def payment_success():
-    return page(
-        "Оплата",
-        """
-<section class="card center">
-<div class="umbrella">
-☂️
-</div>
-<h2>
-Оплата прошла
-</h2>
-<p class="success">
-Платёж получен.
-Подписка будет активирована автоматически.
-</p>
-<a
-    class="btn"
-    href="/cabinet"
->
-Открыть кабинет
-</a>
-</section>
-"""
-    )
-# ============================================================
-# PAYMENT FAIL
-# ============================================================
-@app.route("/payment/fail")
-def payment_fail():
-    return page(
-        "Оплата",
-        """
-<section class="card center">
-<h2>
-Оплата не завершена
-</h2>
-<p class="error">
-Платёж был отменён или не прошёл.
-</p>
-<a
-    class="btn"
-    href="/cabinet"
->
-Вернуться в кабинет
-</a>
-</section>
-"""
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        support_url=SUPPORT_URL,
+        tariffs=TARIFFS,
+        public_url=PUBLIC_SITE_URL,
+        token=token,
+        user=user,
+        info=info,
+        subscription_url=sub_url,
+        github_url=gh_url,
+        happ_url=h_url,
+        message=None,
+        error=None,
     )
 # ============================================================
 # SUBSCRIPTION
 # ============================================================
 @app.route(
-    "/s/<path:key>"
+    "/sub/<token>",
+    methods=["GET"],
 )
-@app.route(
-    "/sub/<path:key>"
-)
-def subscription(key):
-    if key.startswith(
-        SUBSCRIPTION_PREFIX
-    ):
-        key = key[
-            len(SUBSCRIPTION_PREFIX):
-        ]
-    try:
-        user_id = int(key)
-    except ValueError:
-        return Response(
-            "invalid",
-            status=404
-        )
-    user = get_user(
-        user_id
+def subscription(token):
+    user, user_id = get_user_from_token(
+        token
     )
     if not user:
-        return Response(
-            "not found",
-            status=404
-        )
-    content = make_subscription_content(
+        abort(404)
+    info = subscription_info(
+        user
+    )
+    content = get_subscription_content(
         user_id
     )
-    if (
-        user.get("subscription_content")
-        != content
-    ):
-        sync_github(
-            user_id
-        )
-    return Response(
-        content,
-        mimetype="text/plain"
+    if not content:
+        content = ""
+    response = str(content)
+    return response, 200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+# ============================================================
+# GITHUB RAW REDIRECT
+# ============================================================
+@app.route(
+    "/github/<token>",
+    methods=["GET"],
+)
+def github_redirect(token):
+    user, user_id = get_user_from_token(
+        token
     )
+    if not user:
+        abort(404)
+    return redirect(
+        github_url(user_id)
+    )
+# ============================================================
+# CREATE CASHeRA PAYMENT
+# ============================================================
+@app.route(
+    "/pay/<token>/<tariff>",
+    methods=["GET"],
+)
+def create_payment_route(
+    token,
+    tariff,
+):
+    user, user_id = get_user_from_token(
+        token
+    )
+    if not user:
+        abort(404)
+    plan = TARIFFS.get(
+        str(tariff)
+    )
+    if not plan:
+        abort(404)
+    amount = int(
+        plan["amount"]
+    )
+    days = int(
+        plan["days"]
+    )
+    try:
+        result = create_cashera_payment(
+            user_id=user_id,
+            amount=amount,
+            days=days,
+        )
+        if not isinstance(
+            result,
+            dict,
+        ):
+            raise RuntimeError(
+                "CasheRa returned invalid response"
+            )
+        payment_uuid = (
+            result.get("uuid")
+            or result.get("id")
+        )
+        payment_url = (
+            result.get("payment_url")
+            or result.get("url")
+        )
+        if not payment_uuid:
+            raise RuntimeError(
+                "CasheRa did not return payment ID"
+            )
+        if not payment_url:
+            raise RuntimeError(
+                "CasheRa did not return payment URL"
+            )
+        # ----------------------------------------------------
+        # Сохраняем платёж в PostgreSQL
+        # ----------------------------------------------------
+        try:
+            create_payment(
+                user_id=user_id,
+                payment_id=str(
+                    payment_uuid
+                ),
+                amount=amount * 100,
+                days=days,
+                provider="cashera",
+            )
+        except TypeError:
+            # Совместимость со старой сигнатурой
+            create_payment(
+                user_id=user_id,
+                payment_id=str(
+                    payment_uuid
+                ),
+                amount=amount * 100,
+                days=days,
+            )
+        log.info(
+            "CasheRa payment created "
+            "user=%s payment=%s days=%s amount=%s",
+            user_id,
+            payment_uuid,
+            days,
+            amount,
+        )
+        return redirect(
+            payment_url
+        )
+    except Exception as e:
+        log.exception(
+            "Payment creation failed"
+        )
+        info = subscription_info(
+            user
+        )
+        return render_template(
+            "index.html",
+            app_name=APP_NAME,
+            support_url=SUPPORT_URL,
+            tariffs=TARIFFS,
+            public_url=PUBLIC_SITE_URL,
+            token=token,
+            user=user,
+            info=info,
+            subscription_url=subscription_url(
+                user_id
+            ),
+            github_url=github_url(
+                user_id
+            ),
+            happ_url=happ_url(
+                user_id
+            ),
+            message=None,
+            error=(
+                "Не удалось создать платёж. "
+                "Попробуйте ещё раз."
+            ),
+        ), 500
+# ============================================================
+# CASHeRA WEBHOOK
+# ============================================================
+@app.route(
+    "/webhook/cashera",
+    methods=["POST"],
+)
+def cashera_webhook():
+    try:
+        payload = request.get_json(
+            silent=True
+        ) or {}
+        log.info(
+            "CasheRa webhook: %s",
+            payload,
+        )
+        event = (
+            payload.get("event")
+            or payload.get("type")
+            or ""
+        )
+        transaction = (
+            payload.get("transaction")
+            or payload.get("data")
+            or payload
+        )
+        status = str(
+            transaction.get("status")
+            or payload.get("status")
+            or ""
+        ).lower()
+        if event:
+            if event not in (
+                "transaction.status_updated",
+                "transaction_status_updated",
+            ):
+                return jsonify({
+                    "ok": True,
+                    "ignored": True,
+                })
+        if status not in (
+            "paid",
+            "success",
+            "completed",
+        ):
+            return jsonify({
+                "ok": True,
+                "ignored": True,
+            })
+        payment_id = (
+            transaction.get("uuid")
+            or transaction.get("id")
+            or payload.get("uuid")
+            or payload.get("id")
+        )
+        if not payment_id:
+            return jsonify({
+                "ok": False,
+                "error": "payment id missing",
+            }), 400
+        payment_id = str(
+            payment_id
+        )
+        # ----------------------------------------------------
+        # Идемпотентное зачисление
+        # ----------------------------------------------------
+        result = process_paid_payment(
+            payment_id
+        )
+        log.info(
+            "CasheRa payment processed "
+            "%s: %s",
+            payment_id,
+            result,
+        )
+        return jsonify({
+            "ok": True,
+            "result": result,
+        })
+    except Exception as e:
+        log.exception(
+            "CasheRa webhook error"
+        )
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+        }), 500
 # ============================================================
 # HEALTH
 # ============================================================
 @app.route("/health")
 def health():
-    return {
-        "ok": True
-    }
+    return jsonify({
+        "ok": True,
+        "service": "ixxy-web",
+        "version": "2026.09",
+    })
 # ============================================================
-# START
+# 404
+# ============================================================
+@app.errorhandler(404)
+def not_found(error):
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        support_url=SUPPORT_URL,
+        tariffs=TARIFFS,
+        public_url=PUBLIC_SITE_URL,
+        token=None,
+        user=None,
+        info=None,
+        subscription_url=None,
+        github_url=None,
+        happ_url=None,
+        message=None,
+        error="Страница не найдена.",
+    ), 404
+# ============================================================
+# LOCAL
 # ============================================================
 if __name__ == "__main__":
     port = int(
         os.getenv(
             "PORT",
-            "10000"
+            "10000",
         )
     )
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False,
     )
