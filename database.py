@@ -1,33 +1,22 @@
 import os
 from datetime import datetime, timedelta, timezone
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
-
 load_dotenv()
-
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан")
-
 UTC = timezone.utc
-
-
 def get_conn():
     return psycopg2.connect(
         DATABASE_URL,
         cursor_factory=RealDictCursor
     )
-
-
 def init_db():
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGSERIAL PRIMARY KEY,
@@ -45,23 +34,20 @@ def init_db():
                     subscription_content TEXT
                 )
             """)
-
+            # Старые поля оставляем для совместимости
             cur.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS email TEXT
             """)
-
             cur.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS password_hash TEXT
             """)
-
             cur.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx
-                ON users (LOWER(email))
-                WHERE email IS NOT NULL
+                CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique_idx
+                ON users (LOWER(username))
+                WHERE username IS NOT NULL
             """)
-
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS payments (
                     id BIGSERIAL PRIMARY KEY,
@@ -76,7 +62,6 @@ def init_db():
                     paid_at TIMESTAMPTZ
                 )
             """)
-
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS promocodes (
                     code TEXT PRIMARY KEY,
@@ -87,7 +72,6 @@ def init_db():
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
-
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS promocode_uses (
                     id BIGSERIAL PRIMARY KEY,
@@ -97,16 +81,21 @@ def init_db():
                     UNIQUE(user_id, code)
                 )
             """)
-
         conn.commit()
-
     finally:
         conn.close()
-
-
+def normalize_username(username):
+    username = str(username or "").strip()
+    if username.startswith("@"):
+        username = username[1:]
+    return username.lower()
+def is_telegram_id(value):
+    value = str(value or "").strip()
+    if value.startswith("+"):
+        value = value[1:]
+    return value.isdigit()
 def get_user(user_id):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -114,86 +103,159 @@ def get_user(user_id):
                 (int(user_id),)
             )
             return cur.fetchone()
-
     finally:
         conn.close()
-
-
-def get_user_by_email(email):
+def get_user_by_username(username):
+    username = normalize_username(username)
+    if not username:
+        return None
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT *
                 FROM users
-                WHERE LOWER(email)=LOWER(%s)
+                WHERE LOWER(username)=LOWER(%s)
                 LIMIT 1
                 """,
-                (email.strip(),)
+                (username,)
             )
-
             return cur.fetchone()
-
     finally:
         conn.close()
-
-
-def create_site_user(email, password_hash, first_name="Пользователь"):
+def get_user_by_login(login):
+    login = str(login or "").strip()
+    if not login:
+        return None
+    if is_telegram_id(login):
+        return get_user(int(login))
+    return get_user_by_username(login)
+def create_site_user(login, first_name="Пользователь"):
+    """
+    Создаёт пользователя без email и пароля.
+    Если введён Telegram ID —
+    сохраняем его как user_id.
+    Если введён username —
+    PostgreSQL сам выдаёт user_id.
+    """
+    login = str(login or "").strip()
+    if not login:
+        raise ValueError("Telegram ID или username не указан")
+    username = None
+    telegram_id = None
+    if is_telegram_id(login):
+        telegram_id = int(login)
+    else:
+        username = normalize_username(login)
+        if not username:
+            raise ValueError("Некорректный username")
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                INSERT INTO users (
-                    username,
-                    first_name,
-                    email,
-                    password_hash,
-                    subscription,
-                    trial_used,
-                    notify,
-                    accepted_terms
+            if telegram_id is not None:
+                cur.execute(
+                    """
+                    SELECT user_id
+                    FROM users
+                    WHERE user_id=%s
+                    """,
+                    (telegram_id,)
                 )
-                VALUES (
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    FALSE,
-                    FALSE,
-                    TRUE,
-                    TRUE
+                existing = cur.fetchone()
+                if existing:
+                    return int(existing["user_id"])
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        user_id,
+                        username,
+                        first_name,
+                        subscription,
+                        trial_used,
+                        notify,
+                        accepted_terms
+                    )
+                    VALUES (
+                        %s,
+                        NULL,
+                        %s,
+                        FALSE,
+                        FALSE,
+                        TRUE,
+                        TRUE
+                    )
+                    RETURNING user_id
+                    """,
+                    (
+                        telegram_id,
+                        first_name or "Пользователь"
+                    )
                 )
-                RETURNING user_id
-                """,
-                (
-                    email,
-                    first_name,
-                    email,
-                    password_hash
+                user_id = cur.fetchone()["user_id"]
+                # Синхронизируем sequence BIGSERIAL
+                cur.execute(
+                    """
+                    SELECT setval(
+                        pg_get_serial_sequence(
+                            'users',
+                            'user_id'
+                        ),
+                        GREATEST(
+                            COALESCE(
+                                (
+                                    SELECT MAX(user_id)
+                                    FROM users
+                                ),
+                                1
+                            ),
+                            1
+                        ),
+                        true
+                    )
+                    """
                 )
-            )
-
-            user_id = cur.fetchone()["user_id"]
-
+            else:
+                existing = get_user_by_username(username)
+                if existing:
+                    return int(existing["user_id"])
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        username,
+                        first_name,
+                        subscription,
+                        trial_used,
+                        notify,
+                        accepted_terms
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        FALSE,
+                        FALSE,
+                        TRUE,
+                        TRUE
+                    )
+                    RETURNING user_id
+                    """,
+                    (
+                        username,
+                        first_name or "Пользователь"
+                    )
+                )
+                user_id = cur.fetchone()["user_id"]
         conn.commit()
-
         return int(user_id)
-
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-
-
 def save_subscription(user_id, link, content):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 UPDATE users
@@ -207,29 +269,19 @@ def save_subscription(user_id, link, content):
                     int(user_id)
                 )
             )
-
         conn.commit()
-
     finally:
         conn.close()
-
-
 def subscription_active(until):
     if not until:
         return False
-
     if until.tzinfo is None:
         until = until.replace(tzinfo=UTC)
-
     return until > datetime.now(UTC)
-
-
 def activate_subscription(user_id, days):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT subscription_until
@@ -239,26 +291,19 @@ def activate_subscription(user_id, days):
                 """,
                 (int(user_id),)
             )
-
             row = cur.fetchone()
-
             if not row:
                 raise ValueError("Пользователь не найден")
-
             now = datetime.now(UTC)
-
             old_until = row["subscription_until"]
-
             if old_until and old_until.tzinfo is None:
                 old_until = old_until.replace(tzinfo=UTC)
-
-            if old_until and old_until > now:
-                base = old_until
-            else:
-                base = now
-
+            base = (
+                old_until
+                if old_until and old_until > now
+                else now
+            )
             new_until = base + timedelta(days=int(days))
-
             cur.execute(
                 """
                 UPDATE users
@@ -272,21 +317,14 @@ def activate_subscription(user_id, days):
                     int(user_id)
                 )
             )
-
         conn.commit()
-
         return new_until
-
     finally:
         conn.close()
-
-
 def use_trial(user_id, days=1):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT trial_used, subscription_until
@@ -296,30 +334,21 @@ def use_trial(user_id, days=1):
                 """,
                 (int(user_id),)
             )
-
             row = cur.fetchone()
-
             if not row:
                 return None
-
             if row["trial_used"]:
                 return None
-
             now = datetime.now(UTC)
-
             old_until = row["subscription_until"]
-
             if old_until and old_until.tzinfo is None:
                 old_until = old_until.replace(tzinfo=UTC)
-
             base = (
                 old_until
                 if old_until and old_until > now
                 else now
             )
-
             new_until = base + timedelta(days=int(days))
-
             cur.execute(
                 """
                 UPDATE users
@@ -333,15 +362,10 @@ def use_trial(user_id, days=1):
                     int(user_id)
                 )
             )
-
         conn.commit()
-
         return new_until
-
     finally:
         conn.close()
-
-
 def create_payment(
     user_id,
     payment_id,
@@ -350,10 +374,8 @@ def create_payment(
     days
 ):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 INSERT INTO payments (
@@ -385,19 +407,13 @@ def create_payment(
                     int(days)
                 )
             )
-
         conn.commit()
-
     finally:
         conn.close()
-
-
 def get_payment(payment_id):
     conn = get_conn()
-
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT *
@@ -407,24 +423,13 @@ def get_payment(payment_id):
                 """,
                 (str(payment_id),)
             )
-
             return cur.fetchone()
-
     finally:
         conn.close()
-
-
 def process_paid_payment(payment_id):
-    """
-    Повторный webhook не начислит подписку второй раз.
-    """
-
     conn = get_conn()
-
     try:
-
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT *
@@ -434,12 +439,9 @@ def process_paid_payment(payment_id):
                 """,
                 (str(payment_id),)
             )
-
             payment = cur.fetchone()
-
             if not payment:
                 return None
-
             cur.execute(
                 """
                 SELECT subscription_until
@@ -449,40 +451,30 @@ def process_paid_payment(payment_id):
                 """,
                 (payment["user_id"],)
             )
-
             user = cur.fetchone()
-
             if not user:
                 raise ValueError(
                     "Пользователь платежа не найден"
                 )
-
             if payment["status"] == "paid":
-
                 conn.commit()
-
                 return (
                     int(payment["user_id"]),
                     user["subscription_until"],
                     True
                 )
-
             now = datetime.now(UTC)
-
             old_until = user["subscription_until"]
-
             if old_until and old_until.tzinfo is None:
                 old_until = old_until.replace(tzinfo=UTC)
-
-            if old_until and old_until > now:
-                base = old_until
-            else:
-                base = now
-
+            base = (
+                old_until
+                if old_until and old_until > now
+                else now
+            )
             new_until = base + timedelta(
                 days=int(payment["days"])
             )
-
             cur.execute(
                 """
                 UPDATE users
@@ -496,7 +488,6 @@ def process_paid_payment(payment_id):
                     payment["user_id"]
                 )
             )
-
             cur.execute(
                 """
                 UPDATE payments
@@ -506,35 +497,22 @@ def process_paid_payment(payment_id):
                 """,
                 (str(payment_id),)
             )
-
         conn.commit()
-
         return (
             int(payment["user_id"]),
             new_until,
             False
         )
-
     except Exception:
-
         conn.rollback()
-
         raise
-
     finally:
         conn.close()
-
-
 def use_promocode(user_id, code):
-
     code = code.strip().upper()
-
     conn = get_conn()
-
     try:
-
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT *
@@ -544,18 +522,14 @@ def use_promocode(user_id, code):
                 """,
                 (code,)
             )
-
             promo = cur.fetchone()
-
             if not promo or not promo["active"]:
                 return None, "Промокод недействителен"
-
             if (
                 promo["max_uses"]
                 and promo["uses"] >= promo["max_uses"]
             ):
                 return None, "Лимит промокода закончился"
-
             cur.execute(
                 """
                 SELECT 1
@@ -568,10 +542,8 @@ def use_promocode(user_id, code):
                     code
                 )
             )
-
             if cur.fetchone():
                 return None, "Вы уже использовали этот промокод"
-
             cur.execute(
                 """
                 SELECT subscription_until
@@ -581,29 +553,21 @@ def use_promocode(user_id, code):
                 """,
                 (int(user_id),)
             )
-
             user = cur.fetchone()
-
             if not user:
                 return None, "Пользователь не найден"
-
             now = datetime.now(UTC)
-
             old_until = user["subscription_until"]
-
             if old_until and old_until.tzinfo is None:
                 old_until = old_until.replace(tzinfo=UTC)
-
             base = (
                 old_until
                 if old_until and old_until > now
                 else now
             )
-
             new_until = base + timedelta(
                 days=int(promo["days"])
             )
-
             cur.execute(
                 """
                 UPDATE users
@@ -616,7 +580,6 @@ def use_promocode(user_id, code):
                     int(user_id)
                 )
             )
-
             cur.execute(
                 """
                 UPDATE promocodes
@@ -625,7 +588,6 @@ def use_promocode(user_id, code):
                 """,
                 (code,)
             )
-
             cur.execute(
                 """
                 INSERT INTO promocode_uses(user_id, code)
@@ -636,28 +598,17 @@ def use_promocode(user_id, code):
                     code
                 )
             )
-
         conn.commit()
-
         return new_until, None
-
     except Exception:
-
         conn.rollback()
-
         raise
-
     finally:
         conn.close()
-
-
 def get_all_users():
     conn = get_conn()
-
     try:
-
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT *
@@ -665,11 +616,7 @@ def get_all_users():
                 ORDER BY user_id
                 """
             )
-
             return cur.fetchall()
-
     finally:
         conn.close()
-
-
 init_db()
