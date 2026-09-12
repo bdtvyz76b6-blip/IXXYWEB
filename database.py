@@ -1,106 +1,113 @@
 import os
+import sqlite3
+import secrets
 from datetime import datetime, timedelta, timezone
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 load_dotenv()
+# ============================================================
+# CONFIG
+# ============================================================
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL не задан")
 UTC = timezone.utc
+# ============================================================
+# DATABASE
+# ============================================================
 def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL не установлен")
     return psycopg2.connect(
         DATABASE_URL,
-        cursor_factory=RealDictCursor
+        cursor_factory=RealDictCursor,
+        sslmode="require",
     )
-def init_db():
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGSERIAL PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    subscription BOOLEAN DEFAULT FALSE,
-                    subscription_until TIMESTAMPTZ,
-                    subscription_link TEXT,
-                    uuid TEXT,
-                    trial_used BOOLEAN DEFAULT FALSE,
-                    pending_days INTEGER DEFAULT 0,
-                    notify BOOLEAN DEFAULT TRUE,
-                    accepted_terms BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    subscription_content TEXT
-                )
-            """)
-            # Старые поля оставляем для совместимости
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS email TEXT
-            """)
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS password_hash TEXT
-            """)
-            cur.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique_idx
-                ON users (LOWER(username))
-                WHERE username IS NOT NULL
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS payments (
-                    id BIGSERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    payment_id TEXT UNIQUE NOT NULL,
-                    external_id TEXT UNIQUE,
-                    amount INTEGER NOT NULL DEFAULT 0,
-                    days INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    provider TEXT DEFAULT 'cashera',
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    paid_at TIMESTAMPTZ
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS promocodes (
-                    code TEXT PRIMARY KEY,
-                    days INTEGER NOT NULL,
-                    max_uses INTEGER DEFAULT 0,
-                    uses INTEGER DEFAULT 0,
-                    active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS promocode_uses (
-                    id BIGSERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    code TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(user_id, code)
-                )
-            """)
-        conn.commit()
-    finally:
-        conn.close()
+# ============================================================
+# TIME
+# ============================================================
+def now_utc():
+    return datetime.now(UTC)
+def parse_datetime(value):
+    """
+    Преобразует дату из PostgreSQL / строки в datetime UTC.
+    Поддерживает:
+    - datetime
+    - ISO string
+    - PostgreSQL timestamp string
+    - даты с Z
+    - даты без timezone
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            # 2026-09-12T22:00:00Z
+            value = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
+        except ValueError:
+            # Дополнительные PostgreSQL-форматы
+            formats = [
+                "%Y-%m-%d %H:%M:%S%z",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d",
+            ]
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(value, fmt)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=UTC)
+                    return dt.astimezone(UTC)
+                except ValueError:
+                    continue
+    return None
+def format_date(value):
+    dt = parse_datetime(value)
+    if not dt:
+        return "—"
+    return dt.strftime("%d.%m.%Y")
+# ============================================================
+# USERNAME / LOGIN
+# ============================================================
 def normalize_username(username):
-    username = str(username or "").strip()
+    if not username:
+        return None
+    username = str(username).strip()
     if username.startswith("@"):
         username = username[1:]
     return username.lower()
 def is_telegram_id(value):
-    value = str(value or "").strip()
-    if value.startswith("+"):
-        value = value[1:]
+    if not value:
+        return False
+    value = str(value).strip()
+    if value.startswith("-"):
+        return value[1:].isdigit()
     return value.isdigit()
+# ============================================================
+# USERS
+# ============================================================
 def get_user(user_id):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM users WHERE user_id=%s",
-                (int(user_id),)
+                """
+                SELECT *
+                FROM users
+                WHERE user_id = %s
+                LIMIT 1
+                """,
+                (int(user_id),),
             )
             return cur.fetchone()
     finally:
@@ -116,55 +123,57 @@ def get_user_by_username(username):
                 """
                 SELECT *
                 FROM users
-                WHERE LOWER(username)=LOWER(%s)
+                WHERE LOWER(username) = LOWER(%s)
                 LIMIT 1
                 """,
-                (username,)
+                (username,),
             )
             return cur.fetchone()
     finally:
         conn.close()
 def get_user_by_login(login):
-    login = str(login or "").strip()
+    """
+    Поиск пользователя по:
+    - Telegram ID
+    - Telegram username
+    """
     if not login:
         return None
+    login = str(login).strip()
     if is_telegram_id(login):
-        return get_user(int(login))
-    return get_user_by_username(login)
+        try:
+            return get_user(int(login))
+        except Exception:
+            return None
+    username = normalize_username(login)
+    if not username:
+        return None
+    return get_user_by_username(username)
 def create_site_user(login, first_name="Пользователь"):
     """
-    Создаёт пользователя без email и пароля.
-    Если введён Telegram ID —
-    сохраняем его как user_id.
-    Если введён username —
-    PostgreSQL сам выдаёт user_id.
+    Создаёт пользователя сайта.
+    Если login — Telegram ID:
+        user_id = Telegram ID
+    Если login — username:
+        PostgreSQL сам выдаёт user_id.
+    Существующего пользователя повторно не создаёт.
     """
-    login = str(login or "").strip()
     if not login:
-        raise ValueError("Telegram ID или username не указан")
+        raise ValueError("Не указан Telegram ID или username")
+    login = str(login).strip()
+    existing = get_user_by_login(login)
+    if existing:
+        return int(existing["user_id"])
     username = None
     telegram_id = None
     if is_telegram_id(login):
         telegram_id = int(login)
     else:
         username = normalize_username(login)
-        if not username:
-            raise ValueError("Некорректный username")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             if telegram_id is not None:
-                cur.execute(
-                    """
-                    SELECT user_id
-                    FROM users
-                    WHERE user_id=%s
-                    """,
-                    (telegram_id,)
-                )
-                existing = cur.fetchone()
-                if existing:
-                    return int(existing["user_id"])
                 cur.execute(
                     """
                     INSERT INTO users (
@@ -172,207 +181,309 @@ def create_site_user(login, first_name="Пользователь"):
                         username,
                         first_name,
                         subscription,
+                        subscription_until,
+                        subscription_link,
+                        uuid,
                         trial_used,
+                        pending_days,
                         notify,
-                        accepted_terms
+                        accepted_terms,
+                        created_at,
+                        subscription_content
                     )
                     VALUES (
                         %s,
-                        NULL,
+                        %s,
                         %s,
                         FALSE,
+                        NULL,
+                        NULL,
+                        NULL,
                         FALSE,
+                        0,
                         TRUE,
-                        TRUE
+                        FALSE,
+                        NOW(),
+                        NULL
                     )
+                    ON CONFLICT (user_id)
+                    DO NOTHING
                     RETURNING user_id
                     """,
                     (
                         telegram_id,
-                        first_name or "Пользователь"
-                    )
+                        username,
+                        first_name or "Пользователь",
+                    ),
                 )
-                user_id = cur.fetchone()["user_id"]
-                # Синхронизируем sequence BIGSERIAL
-                cur.execute(
-                    """
-                    SELECT setval(
-                        pg_get_serial_sequence(
-                            'users',
-                            'user_id'
-                        ),
-                        GREATEST(
-                            COALESCE(
-                                (
-                                    SELECT MAX(user_id)
-                                    FROM users
+                row = cur.fetchone()
+                if row:
+                    user_id = int(row["user_id"])
+                else:
+                    user_id = telegram_id
+                # Синхронизируем sequence PostgreSQL,
+                # если user_id был задан вручную.
+                try:
+                    cur.execute(
+                        """
+                        SELECT setval(
+                            pg_get_serial_sequence('users', 'user_id'),
+                            GREATEST(
+                                COALESCE(
+                                    (SELECT MAX(user_id) FROM users),
+                                    1
                                 ),
                                 1
                             ),
-                            1
-                        ),
-                        true
+                            true
+                        )
+                        """
                     )
-                    """
-                )
+                except Exception:
+                    conn.rollback()
             else:
-                existing = get_user_by_username(username)
-                if existing:
-                    return int(existing["user_id"])
                 cur.execute(
                     """
                     INSERT INTO users (
                         username,
                         first_name,
                         subscription,
+                        subscription_until,
+                        subscription_link,
+                        uuid,
                         trial_used,
+                        pending_days,
                         notify,
-                        accepted_terms
+                        accepted_terms,
+                        created_at,
+                        subscription_content
                     )
                     VALUES (
                         %s,
                         %s,
                         FALSE,
+                        NULL,
+                        NULL,
+                        NULL,
                         FALSE,
+                        0,
                         TRUE,
-                        TRUE
+                        FALSE,
+                        NOW(),
+                        NULL
                     )
                     RETURNING user_id
                     """,
                     (
                         username,
-                        first_name or "Пользователь"
+                        first_name or "Пользователь",
+                    ),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError(
+                        "Не удалось создать пользователя"
                     )
-                )
-                user_id = cur.fetchone()["user_id"]
+                user_id = int(row["user_id"])
         conn.commit()
-        return int(user_id)
-    except Exception:
-        conn.rollback()
-        raise
+        return user_id
     finally:
         conn.close()
-def save_subscription(user_id, link, content):
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE users
-                SET subscription_link=%s,
-                    subscription_content=%s
-                WHERE user_id=%s
-                """,
-                (
-                    link,
-                    content,
-                    int(user_id)
-                )
-            )
-        conn.commit()
-    finally:
-        conn.close()
+# ============================================================
+# SUBSCRIPTION
+# ============================================================
 def subscription_active(until):
-    if not until:
+    """
+    Проверяет активна ли подписка.
+    Важно:
+    PostgreSQL может вернуть datetime,
+    а некоторые существующие данные могут приходить строкой.
+    """
+    until = parse_datetime(until)
+    if until is None:
         return False
-    if until.tzinfo is None:
-        until = until.replace(tzinfo=UTC)
-    return until > datetime.now(UTC)
-def activate_subscription(user_id, days):
+    return until > now_utc()
+def get_subscription_until(user_id):
+    user = get_user(user_id)
+    if not user:
+        return None
+    return parse_datetime(
+        user.get("subscription_until")
+    )
+def save_subscription(
+    user_id,
+    subscription_until,
+    subscription_link=None,
+    subscription_content=None,
+):
+    """
+    Сохраняет данные подписки.
+    """
+    subscription_until = parse_datetime(subscription_until)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if subscription_link is None and subscription_content is None:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET
+                        subscription = %s,
+                        subscription_until = %s
+                    WHERE user_id = %s
+                    """,
+                    (
+                        bool(
+                            subscription_until
+                            and subscription_until > now_utc()
+                        ),
+                        subscription_until,
+                        int(user_id),
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET
+                        subscription = %s,
+                        subscription_until = %s,
+                        subscription_link = %s,
+                        subscription_content = %s
+                    WHERE user_id = %s
+                    """,
+                    (
+                        bool(
+                            subscription_until
+                            and subscription_until > now_utc()
+                        ),
+                        subscription_until,
+                        subscription_link,
+                        subscription_content,
+                        int(user_id),
+                    ),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+def extend_subscription(user_id, days):
+    """
+    Продлевает подписку пользователя.
+    """
+    days = int(days)
+    if days <= 0:
+        return False
+    user = get_user(user_id)
+    if not user:
+        return False
+    current = parse_datetime(
+        user.get("subscription_until")
+    )
+    current_now = now_utc()
+    if current and current > current_now:
+        new_until = current + timedelta(days=days)
+    else:
+        new_until = current_now + timedelta(days=days)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT subscription_until
-                FROM users
-                WHERE user_id=%s
-                FOR UPDATE
-                """,
-                (int(user_id),)
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError("Пользователь не найден")
-            now = datetime.now(UTC)
-            old_until = row["subscription_until"]
-            if old_until and old_until.tzinfo is None:
-                old_until = old_until.replace(tzinfo=UTC)
-            base = (
-                old_until
-                if old_until and old_until > now
-                else now
-            )
-            new_until = base + timedelta(days=int(days))
-            cur.execute(
-                """
                 UPDATE users
-                SET subscription=TRUE,
-                    subscription_until=%s,
-                    pending_days=0
-                WHERE user_id=%s
+                SET
+                    subscription = TRUE,
+                    subscription_until = %s
+                WHERE user_id = %s
                 """,
                 (
                     new_until,
-                    int(user_id)
-                )
+                    int(user_id),
+                ),
             )
         conn.commit()
-        return new_until
     finally:
         conn.close()
+    return new_until
+def expire_old_subscriptions():
+    """
+    Помечает просроченные подписки как неактивные.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET subscription = FALSE
+                WHERE subscription = TRUE
+                  AND subscription_until IS NOT NULL
+                  AND subscription_until < NOW()
+                """
+            )
+            count = cur.rowcount
+        conn.commit()
+        return count
+    finally:
+        conn.close()
+# ============================================================
+# TRIAL
+# ============================================================
 def use_trial(user_id, days=1):
+    """
+    Выдаёт пробный период один раз.
+    """
+    days = int(days)
+    if days <= 0:
+        return False
+    user = get_user(user_id)
+    if not user:
+        return False
+    if user.get("trial_used"):
+        return False
+    current = parse_datetime(
+        user.get("subscription_until")
+    )
+    current_now = now_utc()
+    if current and current > current_now:
+        new_until = current + timedelta(days=days)
+    else:
+        new_until = current_now + timedelta(days=days)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT trial_used, subscription_until
-                FROM users
-                WHERE user_id=%s
-                FOR UPDATE
-                """,
-                (int(user_id),)
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            if row["trial_used"]:
-                return None
-            now = datetime.now(UTC)
-            old_until = row["subscription_until"]
-            if old_until and old_until.tzinfo is None:
-                old_until = old_until.replace(tzinfo=UTC)
-            base = (
-                old_until
-                if old_until and old_until > now
-                else now
-            )
-            new_until = base + timedelta(days=int(days))
-            cur.execute(
-                """
                 UPDATE users
-                SET trial_used=TRUE,
-                    subscription=TRUE,
-                    subscription_until=%s
-                WHERE user_id=%s
+                SET
+                    subscription = TRUE,
+                    subscription_until = %s,
+                    trial_used = TRUE
+                WHERE user_id = %s
+                  AND COALESCE(trial_used, FALSE) = FALSE
                 """,
                 (
                     new_until,
-                    int(user_id)
-                )
+                    int(user_id),
+                ),
             )
+            updated = cur.rowcount
         conn.commit()
-        return new_until
+        return updated > 0
     finally:
         conn.close()
+# ============================================================
+# PAYMENTS
+# ============================================================
 def create_payment(
     user_id,
-    payment_id,
-    external_id,
     amount,
-    days
+    days,
+    external_id,
 ):
+    """
+    Создаёт платёж в существующей таблице payments.
+    Поддерживает старую структуру таблицы.
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -380,37 +491,35 @@ def create_payment(
                 """
                 INSERT INTO payments (
                     user_id,
-                    payment_id,
-                    external_id,
                     amount,
                     days,
+                    external_id,
                     status,
-                    provider
+                    created_at
                 )
                 VALUES (
                     %s,
                     %s,
                     %s,
                     %s,
-                    %s,
                     'pending',
-                    'cashera'
+                    NOW()
                 )
-                ON CONFLICT (payment_id)
-                DO NOTHING
+                RETURNING *
                 """,
                 (
                     int(user_id),
-                    str(payment_id),
+                    amount,
+                    int(days),
                     str(external_id),
-                    int(amount),
-                    int(days)
-                )
+                ),
             )
+            row = cur.fetchone()
         conn.commit()
+        return row
     finally:
         conn.close()
-def get_payment(payment_id):
+def get_payment_by_external_id(external_id):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -418,15 +527,39 @@ def get_payment(payment_id):
                 """
                 SELECT *
                 FROM payments
-                WHERE payment_id=%s
+                WHERE external_id = %s
                 LIMIT 1
                 """,
-                (str(payment_id),)
+                (str(external_id),),
             )
             return cur.fetchone()
     finally:
         conn.close()
-def process_paid_payment(payment_id):
+def complete_payment(external_id):
+    """
+    Помечает платёж как оплаченный.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE payments
+                SET status = 'paid'
+                WHERE external_id = %s
+                """,
+                (str(external_id),),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+def process_paid_payment(external_id):
+    """
+    Идемпотентная обработка оплаченного платежа.
+    Возвращает:
+        True  — подписка была выдана
+        False — платёж уже обработан / не найден
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -434,82 +567,93 @@ def process_paid_payment(payment_id):
                 """
                 SELECT *
                 FROM payments
-                WHERE payment_id=%s
+                WHERE external_id = %s
                 FOR UPDATE
                 """,
-                (str(payment_id),)
+                (str(external_id),),
             )
             payment = cur.fetchone()
             if not payment:
-                return None
+                conn.rollback()
+                return False
+            if str(payment.get("status", "")).lower() == "paid":
+                conn.rollback()
+                return False
+            user_id = int(payment["user_id"])
+            days = int(payment["days"])
+            user = None
             cur.execute(
                 """
-                SELECT subscription_until
+                SELECT *
                 FROM users
-                WHERE user_id=%s
+                WHERE user_id = %s
                 FOR UPDATE
                 """,
-                (payment["user_id"],)
+                (user_id,),
             )
             user = cur.fetchone()
             if not user:
-                raise ValueError(
-                    "Пользователь платежа не найден"
-                )
-            if payment["status"] == "paid":
-                conn.commit()
-                return (
-                    int(payment["user_id"]),
-                    user["subscription_until"],
-                    True
-                )
-            now = datetime.now(UTC)
-            old_until = user["subscription_until"]
-            if old_until and old_until.tzinfo is None:
-                old_until = old_until.replace(tzinfo=UTC)
-            base = (
-                old_until
-                if old_until and old_until > now
-                else now
+                conn.rollback()
+                return False
+            current = parse_datetime(
+                user.get("subscription_until")
             )
-            new_until = base + timedelta(
-                days=int(payment["days"])
-            )
+            current_now = now_utc()
+            if current and current > current_now:
+                new_until = current + timedelta(days=days)
+            else:
+                new_until = current_now + timedelta(days=days)
             cur.execute(
                 """
                 UPDATE users
-                SET subscription=TRUE,
-                    subscription_until=%s,
-                    pending_days=0
-                WHERE user_id=%s
+                SET
+                    subscription = TRUE,
+                    subscription_until = %s
+                WHERE user_id = %s
                 """,
                 (
                     new_until,
-                    payment["user_id"]
-                )
+                    user_id,
+                ),
             )
             cur.execute(
                 """
                 UPDATE payments
-                SET status='paid',
-                    paid_at=NOW()
-                WHERE payment_id=%s
+                SET
+                    status = 'paid'
+                WHERE external_id = %s
                 """,
-                (str(payment_id),)
+                (str(external_id),),
             )
         conn.commit()
-        return (
-            int(payment["user_id"]),
-            new_until,
-            False
-        )
+        return True
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+# ============================================================
+# PROMOCODES
+# ============================================================
 def use_promocode(user_id, code):
-    code = code.strip().upper()
+    """
+    Использует промокод один раз для конкретного пользователя.
+    Ожидаемая таблица promocodes:
+        code
+        days
+        max_uses
+        uses
+        active
+    Ожидаемая таблица promocode_uses:
+        user_id
+        code
+        created_at
+    """
+    if not code:
+        return False
+    code = str(code).strip().upper()
+    if not code:
+        return False
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -517,106 +661,292 @@ def use_promocode(user_id, code):
                 """
                 SELECT *
                 FROM promocodes
-                WHERE code=%s
+                WHERE UPPER(code) = %s
+                  AND COALESCE(active, TRUE) = TRUE
                 FOR UPDATE
                 """,
-                (code,)
+                (code,),
             )
             promo = cur.fetchone()
-            if not promo or not promo["active"]:
-                return None, "Промокод недействителен"
-            if (
-                promo["max_uses"]
-                and promo["uses"] >= promo["max_uses"]
-            ):
-                return None, "Лимит промокода закончился"
+            if not promo:
+                conn.rollback()
+                return False
             cur.execute(
                 """
                 SELECT 1
                 FROM promocode_uses
-                WHERE user_id=%s
-                AND code=%s
+                WHERE user_id = %s
+                  AND UPPER(code) = %s
+                LIMIT 1
                 """,
                 (
                     int(user_id),
-                    code
+                    code,
+                ),
+            )
+            already_used = cur.fetchone()
+            if already_used:
+                conn.rollback()
+                return False
+            max_uses = promo.get("max_uses")
+            uses = int(promo.get("uses") or 0)
+            if max_uses is not None:
+                if uses >= int(max_uses):
+                    conn.rollback()
+                    return False
+            days = int(promo.get("days") or 0)
+            if days <= 0:
+                conn.rollback()
+                return False
+            user = get_user(user_id)
+            current = None
+            if user:
+                current = parse_datetime(
+                    user.get("subscription_until")
                 )
-            )
-            if cur.fetchone():
-                return None, "Вы уже использовали этот промокод"
-            cur.execute(
-                """
-                SELECT subscription_until
-                FROM users
-                WHERE user_id=%s
-                FOR UPDATE
-                """,
-                (int(user_id),)
-            )
-            user = cur.fetchone()
-            if not user:
-                return None, "Пользователь не найден"
-            now = datetime.now(UTC)
-            old_until = user["subscription_until"]
-            if old_until and old_until.tzinfo is None:
-                old_until = old_until.replace(tzinfo=UTC)
-            base = (
-                old_until
-                if old_until and old_until > now
-                else now
-            )
-            new_until = base + timedelta(
-                days=int(promo["days"])
-            )
+            current_now = now_utc()
+            if current and current > current_now:
+                new_until = current + timedelta(days=days)
+            else:
+                new_until = current_now + timedelta(days=days)
             cur.execute(
                 """
                 UPDATE users
-                SET subscription=TRUE,
-                    subscription_until=%s
-                WHERE user_id=%s
+                SET
+                    subscription = TRUE,
+                    subscription_until = %s
+                WHERE user_id = %s
                 """,
                 (
                     new_until,
-                    int(user_id)
+                    int(user_id),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO promocode_uses (
+                    user_id,
+                    code,
+                    created_at
                 )
+                VALUES (
+                    %s,
+                    %s,
+                    NOW()
+                )
+                """,
+                (
+                    int(user_id),
+                    code,
+                ),
             )
             cur.execute(
                 """
                 UPDATE promocodes
-                SET uses=uses+1
-                WHERE code=%s
+                SET uses = COALESCE(uses, 0) + 1
+                WHERE UPPER(code) = %s
                 """,
-                (code,)
-            )
-            cur.execute(
-                """
-                INSERT INTO promocode_uses(user_id, code)
-                VALUES (%s,%s)
-                """,
-                (
-                    int(user_id),
-                    code
-                )
+                (code,),
             )
         conn.commit()
-        return new_until, None
+        return days
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-def get_all_users():
+# ============================================================
+# DATABASE INIT
+# ============================================================
+def init_db():
+    """
+    Проверяет существующую структуру БД.
+    Новую базу не создаёт.
+    Добавляет только совместимые поля/индексы,
+    если их нет.
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # ------------------------------------------------
+            # USERS
+            # ------------------------------------------------
             cur.execute(
                 """
-                SELECT *
-                FROM users
-                ORDER BY user_id
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS username TEXT
                 """
             )
-            return cur.fetchall()
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS first_name TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS subscription BOOLEAN DEFAULT FALSE
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS subscription_until TIMESTAMPTZ
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS subscription_link TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS uuid TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS trial_used BOOLEAN DEFAULT FALSE
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS pending_days INTEGER DEFAULT 0
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS notify BOOLEAN DEFAULT TRUE
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS accepted_terms BOOLEAN DEFAULT FALSE
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS subscription_content TEXT
+                """
+            )
+            # Старые поля сайта оставляем для совместимости.
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS email TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS password_hash TEXT
+                """
+            )
+            # ------------------------------------------------
+            # PAYMENTS
+            # ------------------------------------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS payments (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    amount NUMERIC,
+                    days INTEGER,
+                    external_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            # ------------------------------------------------
+            # PROMOCODES
+            # ------------------------------------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS promocodes (
+                    id BIGSERIAL PRIMARY KEY,
+                    code TEXT UNIQUE NOT NULL,
+                    days INTEGER NOT NULL,
+                    max_uses INTEGER,
+                    uses INTEGER DEFAULT 0,
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            # ------------------------------------------------
+            # PROMOCODE USES
+            # ------------------------------------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS promocode_uses (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    code TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            # ------------------------------------------------
+            # INDEXES
+            # ------------------------------------------------
+            try:
+                cur.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                    users_username_unique_idx
+                    ON users (LOWER(username))
+                    WHERE username IS NOT NULL
+                    """
+                )
+            except Exception:
+                # Если в старой БД уже есть дубликаты username,
+                # индекс не должен ломать запуск сайта.
+                conn.rollback()
+            try:
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS
+                    payments_external_id_idx
+                    ON payments (external_id)
+                    """
+                )
+            except Exception:
+                conn.rollback()
+            try:
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS
+                    promocode_uses_user_code_idx
+                    ON promocode_uses (user_id, code)
+                    """
+                )
+            except Exception:
+                conn.rollback()
+        conn.commit()
     finally:
         conn.close()
-init_db()
+# ============================================================
+# AUTO INIT
+# ============================================================
+try:
+    init_db()
+except Exception as e:
+    print(
+        "Database init warning:",
+        repr(e),
+    )
