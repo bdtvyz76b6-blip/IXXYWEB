@@ -1,5 +1,5 @@
-Flask
-psycopg2-binary
-python-dotenv
-requests
-gunicorn
+Flask==3.1.2
+gunicorn==23.0.0
+psycopg2-binary==2.9.10
+python-dotenv==1.1.1
+requests==2.32.5
