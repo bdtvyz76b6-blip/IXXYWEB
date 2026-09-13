@@ -3,6 +3,7 @@ import html
 import json
 import secrets
 import base64
+import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
@@ -120,10 +121,14 @@ def parse_token(token):
     if not token:
         return None
 
-    if not token.startswith(SUBSCRIPTION_PREFIX):
+    if not token.startswith(
+        SUBSCRIPTION_PREFIX
+    ):
         return None
 
-    raw = token[len(SUBSCRIPTION_PREFIX):]
+    raw = token[
+        len(SUBSCRIPTION_PREFIX):
+    ]
 
     if not raw.isdigit():
         return None
@@ -135,7 +140,10 @@ def parse_token(token):
 
 
 def make_token(user_id):
-    return f"{SUBSCRIPTION_PREFIX}{int(user_id)}"
+    return (
+        f"{SUBSCRIPTION_PREFIX}"
+        f"{int(user_id)}"
+    )
 
 
 def build_subscription_url(token):
@@ -146,21 +154,31 @@ def build_subscription_url(token):
 
 
 def build_happ_url(token):
-    subscription_url = build_subscription_url(token)
+    subscription_url = (
+        build_subscription_url(token)
+    )
 
     return (
         "https://happ.vpnbypass.click/"
         "?url="
-        + quote(subscription_url, safe="")
+        + quote(
+            subscription_url,
+            safe="",
+        )
     )
 
 
 def build_incy_url(token):
-    subscription_url = build_subscription_url(token)
+    subscription_url = (
+        build_subscription_url(token)
+    )
 
     return (
         "incy://add/"
-        + quote(subscription_url, safe="")
+        + quote(
+            subscription_url,
+            safe="",
+        )
     )
 
 
@@ -181,13 +199,18 @@ def parse_datetime(value):
     else:
         try:
             dt = datetime.fromisoformat(
-                str(value).replace("Z", "+00:00")
+                str(value).replace(
+                    "Z",
+                    "+00:00",
+                )
             )
         except Exception:
             return None
 
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(
+            tzinfo=timezone.utc
+        )
 
     return dt
 
@@ -226,7 +249,9 @@ def format_date(value):
     if not dt:
         return "—"
 
-    return dt.strftime("%d.%m.%Y")
+    return dt.strftime(
+        "%d.%m.%Y"
+    )
 
 
 def format_datetime(value):
@@ -240,7 +265,10 @@ def format_datetime(value):
     )
 
 
-def safe_text(value, default="—"):
+def safe_text(
+    value,
+    default="—",
+):
     if value is None:
         return default
 
@@ -254,8 +282,10 @@ def safe_text(value, default="—"):
 
 def no_cache(response):
     response.headers["Cache-Control"] = (
-        "no-store, no-cache, must-revalidate, max-age=0"
+        "no-store, no-cache, "
+        "must-revalidate, max-age=0"
     )
+
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
 
@@ -309,7 +339,9 @@ def payment_field(
 # ============================================================
 
 def is_admin():
-    user_id = session.get("user_id")
+    user_id = session.get(
+        "user_id"
+    )
 
     if not user_id:
         return False
@@ -359,39 +391,11 @@ def get_user_subscription_status(user):
         None,
     )
 
-    if subscription_active(
+    active = subscription_active(
         subscription_until
-    ):
-        subscription = str(
-            user_field(
-                user,
-                3,
-                "subscription",
-                "",
-            ) or ""
-        ).lower()
+    )
 
-        if subscription == "trial":
-            return (
-                "🎁 Trial",
-                "trial",
-                days_left(
-                    subscription_until
-                ),
-            )
-
-        if subscription in (
-            "vip",
-            "ixxy",
-        ):
-            return (
-                "🟢 Активна",
-                "active",
-                days_left(
-                    subscription_until
-                ),
-            )
-
+    if active:
         return (
             "🟢 Активна",
             "active",
@@ -400,32 +404,14 @@ def get_user_subscription_status(user):
             ),
         )
 
-    subscription = str(
-        user_field(
-            user,
-            3,
-            "subscription",
-            "",
-        ) or ""
-    ).lower()
-
-    if subscription == "trial":
-        return (
-            "🔴 Trial истёк",
-            "expired",
-            0,
-        )
-
-    if subscription:
-        return (
-            "🔴 Истекла",
-            "expired",
-            0,
-        )
+    # ВАЖНО:
+    # subscription в БД является BOOLEAN.
+    # Поэтому не используем значения
+    # trial/vip/ixxy для определения активности.
 
     return (
-        "⚪ Нет подписки",
-        "none",
+        "🔴 Истекла",
+        "expired",
         0,
     )
 
@@ -449,7 +435,10 @@ def user_name(user):
         return str(first_name)
 
     if username:
-        return "@" + str(username).lstrip("@")
+        return (
+            "@"
+            + str(username).lstrip("@")
+        )
 
     return "Пользователь"
 
@@ -483,9 +472,29 @@ def get_admin_users():
 
 
 def get_admin_payments():
+    # Сначала пытаемся использовать
+    # get_payments(), если он существует.
     func = getattr(
         db,
         "get_payments",
+        None,
+    )
+
+    if func:
+        try:
+            result = func()
+
+            if result is not None:
+                return list(result)
+
+        except Exception:
+            pass
+
+    # В твоей database.py может называться
+    # get_all_payments().
+    func = getattr(
+        db,
+        "get_all_payments",
         None,
     )
 
@@ -511,21 +520,46 @@ def get_admin_user_payments(user_id):
         None,
     )
 
-    if not func:
-        return []
+    if func:
+        try:
+            result = func(
+                int(user_id)
+            )
 
-    try:
-        result = func(
-            int(user_id)
-        )
+            if result is not None:
+                return list(result)
 
-        if result is None:
-            return []
+        except Exception:
+            pass
 
-        return list(result)
+    # Fallback:
+    # берём все платежи и фильтруем
+    # по user_id.
+    payments = get_admin_payments()
 
-    except Exception:
-        return []
+    result = []
+
+    for payment in payments:
+        try:
+            payment_user_id = int(
+                payment_field(
+                    payment,
+                    1,
+                    "user_id",
+                    0,
+                )
+            )
+
+            if (
+                payment_user_id
+                == int(user_id)
+            ):
+                result.append(payment)
+
+        except Exception:
+            continue
+
+    return result
 
 
 def call_database_function(
@@ -557,8 +591,11 @@ def call_database_function(
 
 def github_headers():
     headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
+        "Accept": (
+            "application/vnd.github+json"
+        ),
+        "X-GitHub-Api-Version":
+            "2022-11-28",
     }
 
     if GITHUB_TOKEN:
@@ -571,7 +608,7 @@ def github_headers():
 
 def github_user_url(user_id):
     return (
-        f"https://raw.githubusercontent.com/"
+        "https://raw.githubusercontent.com/"
         f"{GITHUB_OWNER}/"
         f"{GITHUB_REPO}/"
         f"{GITHUB_BRANCH}/"
@@ -581,8 +618,9 @@ def github_user_url(user_id):
 
 def github_get_file(user_id):
     url = (
-        f"https://api.github.com/repos/"
-        f"{GITHUB_OWNER}/{GITHUB_REPO}/contents/"
+        "https://api.github.com/repos/"
+        f"{GITHUB_OWNER}/"
+        f"{GITHUB_REPO}/contents/"
         f"users/{int(user_id)}.txt"
         f"?ref={GITHUB_BRANCH}"
     )
@@ -615,8 +653,9 @@ def github_save_user(
     )
 
     url = (
-        f"https://api.github.com/repos/"
-        f"{GITHUB_OWNER}/{GITHUB_REPO}/contents/"
+        "https://api.github.com/repos/"
+        f"{GITHUB_OWNER}/"
+        f"{GITHUB_REPO}/contents/"
         f"{path}"
     )
 
@@ -637,8 +676,13 @@ def github_save_user(
         "branch": GITHUB_BRANCH,
     }
 
-    if old_file and old_file.get("sha"):
-        payload["sha"] = old_file["sha"]
+    if (
+        old_file
+        and old_file.get("sha")
+    ):
+        payload["sha"] = (
+            old_file["sha"]
+        )
 
     response = requests.put(
         url,
@@ -652,6 +696,73 @@ def github_save_user(
     return response.json()
 
 
+def github_raw_file(filename):
+    """
+    Получает актуальный текстовый файл
+    напрямую из GitHub.
+
+    Используются:
+      servers.txt
+      no_servers.txt
+
+    Timestamp в URL нужен для уменьшения
+    вероятности получения старого кеша.
+    """
+
+    if filename not in (
+        "servers.txt",
+        "no_servers.txt",
+    ):
+        raise ValueError(
+            "Разрешены только "
+            "servers.txt и no_servers.txt"
+        )
+
+    url = (
+        "https://raw.githubusercontent.com/"
+        f"{GITHUB_OWNER}/"
+        f"{GITHUB_REPO}/"
+        f"{GITHUB_BRANCH}/"
+        f"{filename}"
+        f"?_={int(time.time())}"
+    )
+
+    response = requests.get(
+        url,
+        headers={
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.text.strip()
+
+
+def get_servers_files():
+    """
+    Одновременно получаем оба источника:
+
+    servers.txt     -> активные
+    no_servers.txt  -> неактивные
+    """
+
+    servers = github_raw_file(
+        "servers.txt"
+    )
+
+    no_servers = github_raw_file(
+        "no_servers.txt"
+    )
+
+    return (
+        servers,
+        no_servers,
+    )
+
+
 # ============================================================
 # SUBSCRIPTION CONTENT
 # ============================================================
@@ -659,31 +770,19 @@ def github_save_user(
 def active_subscription_content(
     user_id,
     subscription_until,
+    servers=None,
 ):
     date_text = format_date(
         subscription_until
     )
 
-    try:
-        url = (
-            f"https://raw.githubusercontent.com/"
-            f"{GITHUB_OWNER}/"
-            f"{GITHUB_REPO}/"
-            f"{GITHUB_BRANCH}/"
-            f"servers.txt"
-        )
-
-        response = requests.get(
-            url,
-            timeout=20,
-        )
-
-        response.raise_for_status()
-
-        servers = response.text.strip()
-
-    except Exception:
-        servers = ""
+    if servers is None:
+        try:
+            servers = github_raw_file(
+                "servers.txt"
+            )
+        except Exception:
+            servers = ""
 
     content = (
         'id="1obn2u"\n'
@@ -691,43 +790,72 @@ def active_subscription_content(
         'id="65uefq"\n'
         'id="f66b5v"\n'
         'id="ps27vy"\n'
-        '#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
+        '#profile-title: '
+        '𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
         '#profile-update-interval: 1\n'
         '#subscription-userinfo: '
         'upload=0; download=0; total=0\n'
         '#hide-settings: true\n'
-        f'#announce: 🟢 Подписка активна • '
-        f'до {date_text} • ☂️ ixxy VPN\n'
+        f'#announce: '
+        f'🟢 Подписка активна • '
+        f'до {date_text} • '
+        f'☂️ ixxy VPN\n'
     )
 
     if servers:
         content += (
             "\n"
-            + servers
+            + servers.strip()
             + "\n"
         )
 
     return content
 
 
-def inactive_subscription_content():
-    return (
+def inactive_subscription_content(
+    no_servers=None,
+):
+    if no_servers is None:
+        try:
+            no_servers = github_raw_file(
+                "no_servers.txt"
+            )
+        except Exception:
+            no_servers = ""
+
+    content = (
         'id="rp03e1"\n'
         'id="kx1hv9"\n'
         'id="zkoq0g"\n'
         'id="67cogr"\n'
         'id="gdiay7"\n'
-        '#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
+        '#profile-title: '
+        '𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
         '#profile-update-interval: 1\n'
         '#subscription-userinfo: '
         'upload=0; download=0; total=0\n'
         '#hide-settings: true\n'
-        '#announce: 🔴 Подписка не активна • '
-        'Продлите подписку на сайте ixxy VPN\n'
+        '#announce: '
+        '🔴 Подписка не активна • '
+        'Продлите подписку на сайте '
+        'ixxy VPN\n'
     )
 
+    if no_servers:
+        content += (
+            "\n"
+            + no_servers.strip()
+            + "\n"
+        )
 
-def build_current_content(user_id):
+    return content
+
+
+def build_current_content(
+    user_id,
+    servers=None,
+    no_servers=None,
+):
     user = db.get_user(
         user_id
     )
@@ -742,24 +870,93 @@ def build_current_content(user_id):
         None,
     )
 
+    # ВАЖНО:
+    # Реальное состояние определяется
+    # только по subscription_until.
+
     if subscription_active(
         subscription_until
     ):
         return active_subscription_content(
             user_id,
             subscription_until,
+            servers=servers,
         )
 
-    return inactive_subscription_content()
+    return inactive_subscription_content(
+        no_servers=no_servers,
+    )
 
 
 # ============================================================
-# SYNC
+# SAVE SUBSCRIPTION TO DB
 # ============================================================
 
-def sync_subscription(user_id):
+def save_subscription_to_db(
+    user_id,
+    content,
+):
+    """
+    Сохраняем актуальное содержимое
+    также в БД.
+
+    Это важно, потому что /sub/<token>
+    сначала может брать content из БД.
+    """
+
+    try:
+        save_content = getattr(
+            db,
+            "save_subscription_content",
+            None,
+        )
+
+        if save_content:
+            save_content(
+                user_id,
+                content,
+            )
+    except Exception:
+        pass
+
+    try:
+        save_link = getattr(
+            db,
+            "save_subscription_link",
+            None,
+        )
+
+        if save_link:
+            save_link(
+                user_id,
+                github_user_url(
+                    user_id
+                ),
+            )
+    except Exception:
+        pass
+
+
+# ============================================================
+# SYNC ONE USER
+# ============================================================
+
+def sync_subscription(
+    user_id,
+    servers=None,
+    no_servers=None,
+):
+    """
+    Обновляет один users/<ID>.txt.
+
+    Если servers/no_servers переданы,
+    повторно GitHub не запрашивается.
+    """
+
     content = build_current_content(
-        user_id
+        user_id,
+        servers=servers,
+        no_servers=no_servers,
     )
 
     if content is None:
@@ -773,7 +970,143 @@ def sync_subscription(user_id):
     except Exception:
         return False
 
+    save_subscription_to_db(
+        user_id,
+        content,
+    )
+
     return True
+
+
+# ============================================================
+# SYNC ALL USERS
+# ============================================================
+
+def sync_all_subscriptions():
+    """
+    Главная массовая синхронизация.
+
+    1. Получаем свежий servers.txt.
+    2. Получаем свежий no_servers.txt.
+    3. Берём всех пользователей из БД.
+    4. Активным выдаём servers.txt.
+    5. Истёкшим выдаём no_servers.txt.
+    6. Обновляем users/<ID>.txt.
+    7. Сохраняем content в БД.
+    """
+
+    users = get_admin_users()
+
+    total = len(users)
+
+    success = 0
+    failed = 0
+    active_count = 0
+    inactive_count = 0
+
+    errors = []
+
+    # --------------------------------------------------------
+    # Загружаем источники ОДИН раз.
+    # --------------------------------------------------------
+
+    try:
+        servers, no_servers = (
+            get_servers_files()
+        )
+
+    except Exception as e:
+        return {
+            "total": total,
+            "success": 0,
+            "failed": total,
+            "active": 0,
+            "inactive": 0,
+            "errors": [
+                "Не удалось получить "
+                f"servers.txt/no_servers.txt: "
+                f"{e}"
+            ],
+        }
+
+    # --------------------------------------------------------
+    # Обновляем пользователей.
+    # --------------------------------------------------------
+
+    for user in users:
+        user_id = get_admin_user_id(
+            user
+        )
+
+        if user_id is None:
+            failed += 1
+
+            errors.append(
+                "Не удалось определить "
+                "Telegram ID пользователя"
+            )
+
+            continue
+
+        subscription_until = user_field(
+            user,
+            4,
+            "subscription_until",
+            None,
+        )
+
+        active = subscription_active(
+            subscription_until
+        )
+
+        if active:
+            active_count += 1
+        else:
+            inactive_count += 1
+
+        if active:
+            content = (
+                active_subscription_content(
+                    user_id,
+                    subscription_until,
+                    servers=servers,
+                )
+            )
+        else:
+            content = (
+                inactive_subscription_content(
+                    no_servers=no_servers,
+                )
+            )
+
+        try:
+            github_save_user(
+                user_id,
+                content,
+            )
+
+            save_subscription_to_db(
+                user_id,
+                content,
+            )
+
+            success += 1
+
+        except Exception as e:
+            failed += 1
+
+            errors.append(
+                f"{user_id}: {e}"
+            )
+
+    return {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "active": active_count,
+        "inactive": inactive_count,
+        "errors": errors,
+    }
 
 
 # ============================================================
@@ -809,22 +1142,26 @@ def cashera_create_payment(
             f"/cashera/webhook"
         ),
         "success_url": (
-            f"{PUBLIC_SITE_URL}/cabinet"
+            f"{PUBLIC_SITE_URL}"
+            "/cabinet"
         ),
         "fail_url": (
-            f"{PUBLIC_SITE_URL}/cabinet"
+            f"{PUBLIC_SITE_URL}"
+            "/cabinet"
         ),
     }
 
     headers = {
         "X-Api-Key": CASHERA_API_KEY,
-        "Content-Type": "application/json",
+        "Content-Type": (
+            "application/json"
+        ),
         "Accept": "application/json",
     }
 
     response = requests.post(
         f"{CASHERA_URL}"
-        f"/integration/transactions",
+        "/integration/transactions",
         headers=headers,
         json=payload,
         timeout=30,
@@ -853,7 +1190,8 @@ def cashera_create_payment(
             )
 
         raise RuntimeError(
-            f"CasheRa {response.status_code}: "
+            f"CasheRa "
+            f"{response.status_code}: "
             f"{message}"
         )
 
@@ -919,12 +1257,17 @@ def verify_cashera_webhook():
         return False
 
     if CASHERA_API_SECRET:
-        received_secret = request.headers.get(
-            "X-Secret",
-            "",
+        received_secret = (
+            request.headers.get(
+                "X-Secret",
+                "",
+            )
         )
 
-        if received_secret != CASHERA_API_SECRET:
+        if (
+            received_secret
+            != CASHERA_API_SECRET
+        ):
             return False
 
     return True
@@ -947,15 +1290,22 @@ def auth_page(error=None):
     page = f"""
 <!doctype html>
 <html lang="ru">
+
 <head>
+
 <meta charset="utf-8">
+
 <meta name="viewport"
-      content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#07030d">
+      content="width=device-width,
+      initial-scale=1">
+
+<meta name="theme-color"
+      content="#07030d">
 
 <title>ixxy VPN</title>
 
 <style>
+
 * {{
     box-sizing: border-box;
 }}
@@ -963,6 +1313,7 @@ def auth_page(error=None):
 body {{
     margin: 0;
     min-height: 100vh;
+
     background:
         radial-gradient(
             circle at 50% -10%,
@@ -970,13 +1321,16 @@ body {{
             transparent 38%
         ),
         #07030d;
+
     color: white;
+
     font-family:
         -apple-system,
         BlinkMacSystemFont,
         "SF Pro Display",
         Arial,
         sans-serif;
+
     display: grid;
     place-items: center;
 }}
@@ -984,13 +1338,24 @@ body {{
 .card {{
     width: min(92%,470px);
     padding: 38px 25px;
+
     border-radius: 30px;
+
     text-align: center;
-    background: rgba(20,10,32,.78);
-    border: 1px solid rgba(180,100,255,.18);
+
+    background:
+        rgba(20,10,32,.78);
+
+    border:
+        1px solid
+        rgba(180,100,255,.18);
+
     box-shadow:
-        0 30px 100px rgba(0,0,0,.55),
-        0 0 70px rgba(125,50,255,.12);
+        0 30px 100px
+        rgba(0,0,0,.55),
+
+        0 0 70px
+        rgba(125,50,255,.12);
 }}
 
 .logo {{
@@ -1015,11 +1380,20 @@ form {{
 input {{
     width: 100%;
     height: 55px;
+
     padding: 0 17px;
+
     border-radius: 16px;
-    border: 1px solid rgba(255,255,255,.09);
+
+    border:
+        1px solid
+        rgba(255,255,255,.09);
+
     outline: none;
-    background: rgba(255,255,255,.045);
+
+    background:
+        rgba(255,255,255,.045);
+
     color: white;
     font-size: 15px;
 }}
@@ -1030,17 +1404,24 @@ input::placeholder {{
 
 .buttons {{
     display: grid;
-    grid-template-columns: 1fr 1fr;
+
+    grid-template-columns:
+        1fr 1fr;
+
     gap: 9px;
+
     margin-top: 10px;
 }}
 
 button {{
     height: 53px;
+
     border: 0;
     border-radius: 16px;
+
     font-size: 14px;
     font-weight: 850;
+
     cursor: pointer;
 }}
 
@@ -1051,30 +1432,46 @@ button {{
             #9b5cff,
             #6d2cff
         );
+
     color: white;
 }}
 
 .secondary {{
-    background: rgba(255,255,255,.06);
+    background:
+        rgba(255,255,255,.06);
+
     color: white;
-    border: 1px solid rgba(255,255,255,.08);
+
+    border:
+        1px solid
+        rgba(255,255,255,.08);
 }}
 
 .error {{
     margin-top: 16px;
+
     padding: 12px;
+
     border-radius: 14px;
-    background: rgba(255,70,90,.1);
+
+    background:
+        rgba(255,70,90,.1);
+
     color: #ff9aa6;
+
     font-size: 13px;
 }}
 
 .note {{
     margin-top: 20px;
+
     color: #746b7d;
+
     font-size: 12px;
 }}
+
 </style>
+
 </head>
 
 <body>
@@ -1146,7 +1543,9 @@ button {{
 
 @app.route("/")
 def index():
-    if session.get("user_id"):
+    if session.get(
+        "user_id"
+    ):
         return redirect(
             "/cabinet"
         )
@@ -1167,7 +1566,8 @@ def login():
 
     if not login_value:
         return auth_page(
-            "Введите Telegram ID или username."
+            "Введите Telegram ID "
+            "или username."
         )
 
     try:
@@ -1180,8 +1580,9 @@ def login():
     if not user:
         return auth_page(
             "Пользователь не найден. "
-            "Если вы хотите создать аккаунт, "
-            "нажмите «Регистрация»."
+            "Если вы хотите создать "
+            "аккаунт, нажмите "
+            "«Регистрация»."
         )
 
     try:
@@ -1194,7 +1595,8 @@ def login():
         )
     except Exception:
         return auth_page(
-            "Не удалось определить Telegram ID."
+            "Не удалось определить "
+            "Telegram ID."
         )
 
     session.clear()
@@ -1218,17 +1620,20 @@ def register():
 
     if not login_value:
         return auth_page(
-            "Введите Telegram ID или username."
+            "Введите Telegram ID "
+            "или username."
         )
 
     try:
         user = db.register_user(
             login_value
         )
+
     except ValueError as e:
         return auth_page(
             str(e)
         )
+
     except Exception as e:
         return auth_page(
             f"Ошибка регистрации: {e}"
@@ -1236,7 +1641,8 @@ def register():
 
     if not user:
         return auth_page(
-            "Не удалось создать пользователя."
+            "Не удалось создать "
+            "пользователя."
         )
 
     try:
@@ -1249,7 +1655,8 @@ def register():
         )
     except Exception:
         return auth_page(
-            "Не удалось определить Telegram ID."
+            "Не удалось определить "
+            "Telegram ID."
         )
 
     session.clear()
@@ -1267,6 +1674,7 @@ def register():
 @app.route("/logout")
 def logout():
     session.clear()
+
     return redirect("/")
 
 
@@ -1331,8 +1739,10 @@ def cabinet():
         user_id
     )
 
-    subscription_url = build_subscription_url(
-        token
+    subscription_url = (
+        build_subscription_url(
+            token
+        )
     )
 
     happ_url = build_happ_url(
@@ -1363,39 +1773,67 @@ def cabinet():
 
     tariffs_html = ""
 
-    for tariff_days, price in TARIFFS.items():
+    for tariff_days, price in (
+        TARIFFS.items()
+    ):
         tariffs_html += f"""
         <a class="tariff"
            href="/buy/{tariff_days}">
+
             <div>
-                <b>{tariff_days} дней</b>
-                <span>{price} ₽</span>
+
+                <b>
+                    {tariff_days} дней
+                </b>
+
+                <span>
+                    {price} ₽
+                </span>
+
             </div>
-            <strong>›</strong>
+
+            <strong>
+                ›
+            </strong>
+
         </a>
         """
 
     page = f"""
 <!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
-      content="width=device-width,initial-scale=1,
-      maximum-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#07030d">
 
-<title>ixxy VPN — Кабинет</title>
+<html lang="ru">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport"
+      content="width=device-width,
+      initial-scale=1,
+      maximum-scale=1,
+      viewport-fit=cover">
+
+<meta name="theme-color"
+      content="#07030d">
+
+<title>
+ixxy VPN — Кабинет
+</title>
 
 <style>
+
 * {{
     box-sizing: border-box;
-    -webkit-tap-highlight-color: transparent;
+
+    -webkit-tap-highlight-color:
+        transparent;
 }}
 
 body {{
     margin: 0;
     min-height: 100vh;
+
     background:
         radial-gradient(
             circle at 50% -10%,
@@ -1403,7 +1841,9 @@ body {{
             transparent 35%
         ),
         #07030d;
+
     color: #fff;
+
     font-family:
         -apple-system,
         BlinkMacSystemFont,
@@ -1417,16 +1857,25 @@ body {{
         calc(100% - 28px),
         620px
     );
+
     margin: auto;
+
     padding:
         20px 0
-        calc(35px + env(safe-area-inset-bottom));
+        calc(
+            35px
+            + env(safe-area-inset-bottom)
+        );
 }}
 
 .header {{
     display: flex;
+
     align-items: center;
-    justify-content: space-between;
+
+    justify-content:
+        space-between;
+
     margin-bottom: 28px;
 }}
 
@@ -1458,7 +1907,9 @@ body {{
 .hero h1 {{
     font-size: 39px;
     line-height: 1;
+
     letter-spacing: -2px;
+
     margin: 9px 0;
 }}
 
@@ -1469,58 +1920,88 @@ body {{
 
 .card {{
     margin-top: 13px;
+
     padding: 20px;
+
     border-radius: 25px;
-    background: rgba(20,10,32,.72);
-    border: 1px solid rgba(180,100,255,.13);
-    box-shadow: 0 20px 65px rgba(0,0,0,.28);
+
+    background:
+        rgba(20,10,32,.72);
+
+    border:
+        1px solid
+        rgba(180,100,255,.13);
+
+    box-shadow:
+        0 20px 65px
+        rgba(0,0,0,.28);
 }}
 
 .status {{
     display: flex;
-    justify-content: space-between;
+
+    justify-content:
+        space-between;
+
     align-items: center;
 }}
 
 .badge {{
     padding: 8px 11px;
+
     border-radius: 999px;
+
     font-size: 12px;
     font-weight: 800;
 }}
 
 .active {{
-    background: rgba(90,255,160,.1);
+    background:
+        rgba(90,255,160,.1);
+
     color: #91ffbd;
 }}
 
 .inactive {{
-    background: rgba(255,80,100,.1);
+    background:
+        rgba(255,80,100,.1);
+
     color: #ff8997;
 }}
 
 .big {{
     margin: 19px 0;
+
     font-size: 31px;
     font-weight: 900;
 }}
 
 .grid {{
     display: grid;
-    grid-template-columns: 1fr 1fr;
+
+    grid-template-columns:
+        1fr 1fr;
+
     gap: 10px;
 }}
 
 .stat {{
     padding: 14px;
+
     border-radius: 17px;
-    background: rgba(255,255,255,.035);
+
+    background:
+        rgba(255,255,255,.035);
 }}
 
 .label {{
     color: #746c7e;
+
     font-size: 10px;
-    text-transform: uppercase;
+
+    text-transform:
+        uppercase;
+
     letter-spacing: 1px;
 }}
 
@@ -1531,12 +2012,18 @@ body {{
 
 .button {{
     display: flex;
+
     align-items: center;
     justify-content: center;
+
     min-height: 53px;
+
     margin-top: 10px;
+
     border-radius: 17px;
+
     text-decoration: none;
+
     font-weight: 850;
 }}
 
@@ -1547,55 +2034,89 @@ body {{
             #9b5cff,
             #6d2cff
         );
+
     color: white;
 }}
 
 .secondary {{
-    background: rgba(255,255,255,.045);
+    background:
+        rgba(255,255,255,.045);
+
     color: white;
-    border: 1px solid rgba(255,255,255,.08);
+
+    border:
+        1px solid
+        rgba(255,255,255,.08);
 }}
 
 .copybox {{
     display: flex;
+
     gap: 7px;
+
     margin-top: 12px;
+
     padding: 6px;
+
     background: #09050e;
+
     border-radius: 15px;
 }}
 
 .copybox input {{
     flex: 1;
+
     min-width: 0;
+
     border: 0;
     outline: 0;
+
     background: transparent;
+
     color: #81798a;
+
     padding: 9px;
+
     font-size: 11px;
 }}
 
 .copy {{
     border: 0;
+
     border-radius: 11px;
+
     padding: 0 13px;
+
     background: white;
     color: black;
+
     font-weight: 900;
 }}
 
 .tariff {{
     display: flex;
+
     align-items: center;
-    justify-content: space-between;
+
+    justify-content:
+        space-between;
+
     padding: 15px;
+
     margin-top: 8px;
+
     border-radius: 16px;
-    background: rgba(255,255,255,.035);
+
+    background:
+        rgba(255,255,255,.035);
+
     color: white;
+
     text-decoration: none;
-    border: 1px solid rgba(255,255,255,.06);
+
+    border:
+        1px solid
+        rgba(255,255,255,.06);
 }}
 
 .tariff b {{
@@ -1604,8 +2125,11 @@ body {{
 
 .tariff span {{
     display: block;
+
     color: #9e93aa;
+
     font-size: 12px;
+
     margin-top: 4px;
 }}
 
@@ -1616,11 +2140,16 @@ body {{
 
 .footer {{
     text-align: center;
+
     color: #57505f;
+
     font-size: 11px;
+
     padding: 25px 0;
 }}
+
 </style>
+
 </head>
 
 <body>
@@ -1630,11 +2159,16 @@ body {{
 <header class="header">
 
     <div class="brand">
-        <span class="logo">☂️</span>
+        <span class="logo">
+            ☂️
+        </span>
+
         ixxy VPN
     </div>
 
-    <a class="logout" href="/logout">
+    <a
+        class="logout"
+        href="/logout">
         Выйти
     </a>
 
@@ -1648,7 +2182,10 @@ body {{
 
     <h1>
         Привет,
-        {safe_text(first_name, "Пользователь")}
+        {safe_text(
+            first_name,
+            "Пользователь"
+        )}
     </h1>
 
     <p>
@@ -1665,7 +2202,8 @@ body {{
             Состояние подписки
         </span>
 
-        <span class="badge {status_class}">
+        <span
+            class="badge {status_class}">
             {status}
         </span>
 
@@ -1678,6 +2216,7 @@ body {{
     <div class="grid">
 
         <div class="stat">
+
             <div class="label">
                 Тариф
             </div>
@@ -1688,9 +2227,11 @@ body {{
                     "ixxy VPN"
                 )}
             </div>
+
         </div>
 
         <div class="stat">
+
             <div class="label">
                 Действует до
             </div>
@@ -1700,6 +2241,7 @@ body {{
                     subscription_until
                 )}
             </div>
+
         </div>
 
     </div>
@@ -1712,13 +2254,21 @@ body {{
         Подключение
     </div>
 
-    <a class="button primary"
-       href="{html.escape(happ_url, quote=True)}">
+    <a
+        class="button primary"
+        href="{html.escape(
+            happ_url,
+            quote=True
+        )}">
         Подключить через Happ
     </a>
 
-    <a class="button secondary"
-       href="{html.escape(incy_url, quote=True)}">
+    <a
+        class="button secondary"
+        href="{html.escape(
+            incy_url,
+            quote=True
+        )}">
         Открыть в INCY
     </a>
 
@@ -1785,21 +2335,36 @@ body {{
 </div>
 
 <script>
+
 function copySub() {{
+
     const input =
         document.getElementById("sub");
 
     navigator.clipboard
         .writeText(input.value)
         .then(() => {{
-            alert("Ссылка скопирована");
+
+            alert(
+                "Ссылка скопирована"
+            );
+
         }})
         .catch(() => {{
+
             input.select();
-            document.execCommand("copy");
-            alert("Ссылка скопирована");
+
+            document.execCommand(
+                "copy"
+            );
+
+            alert(
+                "Ссылка скопирована"
+            );
+
         }});
 }}
+
 </script>
 
 </body>
@@ -1818,7 +2383,9 @@ function copySub() {{
 # BUY
 # ============================================================
 
-@app.route("/buy/<int:days>")
+@app.route(
+    "/buy/<int:days>"
+)
 def buy(days):
     user_id = session.get(
         "user_id"
@@ -1832,7 +2399,8 @@ def buy(days):
 
     if not CASHERA_API_KEY:
         return Response(
-            "CASHERA_API_KEY не настроен",
+            "CASHERA_API_KEY "
+            "не настроен",
             status=500,
             mimetype="text/plain",
         )
@@ -1856,8 +2424,10 @@ def buy(days):
             status="pending",
         )
 
-        payment_url = extract_payment_url(
-            result
+        payment_url = (
+            extract_payment_url(
+                result
+            )
         )
 
         if not payment_url:
@@ -1874,7 +2444,9 @@ def buy(days):
                     indent=2,
                 ),
                 status=502,
-                mimetype="application/json",
+                mimetype=(
+                    "application/json"
+                ),
             )
 
         return redirect(
@@ -1883,7 +2455,7 @@ def buy(days):
 
     except Exception as e:
         return Response(
-            f"Ошибка создания оплаты: "
+            "Ошибка создания оплаты: "
             f"{html.escape(str(e))}",
             status=500,
             mimetype="text/plain",
@@ -1894,7 +2466,9 @@ def buy(days):
 # CASHERA WEBHOOK
 # ============================================================
 
-@app.post("/cashera/webhook")
+@app.post(
+    "/cashera/webhook"
+)
 def cashera_webhook():
 
     if not verify_cashera_webhook():
@@ -1903,9 +2477,12 @@ def cashera_webhook():
             "error": "invalid webhook",
         }, 403
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
     transaction = data.get(
         "transaction"
@@ -1942,19 +2519,26 @@ def cashera_webhook():
     if not external_id:
         return {
             "ok": False,
-            "error": "external_id missing",
+            "error": (
+                "external_id missing"
+            ),
         }, 400
 
-    if db.payment_processed(
-        external_id
-    ):
-        return {
-            "ok": True,
-            "duplicate": True,
-        }
+    try:
+        if db.payment_processed(
+            external_id
+        ):
+            return {
+                "ok": True,
+                "duplicate": True,
+            }
+    except Exception:
+        pass
 
-    payment = db.get_payment_by_external_id(
-        external_id
+    payment = (
+        db.get_payment_by_external_id(
+            external_id
+        )
     )
 
     if not payment:
@@ -1983,7 +2567,9 @@ def cashera_webhook():
     except Exception:
         return {
             "ok": False,
-            "error": "invalid payment data",
+            "error": (
+                "invalid payment data"
+            ),
         }, 500
 
     try:
@@ -1996,10 +2582,16 @@ def cashera_webhook():
             external_id
         )
 
-        db.mark_payment_processed(
-            external_id
-        )
+        try:
+            db.mark_payment_processed(
+                external_id
+            )
+        except Exception:
+            pass
 
+        # После оплаты обязательно
+        # обновляем GitHub users/<ID>.txt
+        # с новым servers.txt.
         sync_subscription(
             user_id
         )
@@ -2019,7 +2611,9 @@ def cashera_webhook():
 # SUBSCRIPTION
 # ============================================================
 
-@app.route("/sub/<token>")
+@app.route(
+    "/sub/<token>"
+)
 def subscription(token):
     user_id = parse_token(
         token
@@ -2028,9 +2622,16 @@ def subscription(token):
     if user_id is None:
         abort(404)
 
+    # Сначала проверяем актуальное
+    # состояние пользователя.
+    #
+    # Если content есть в БД, после нашей
+    # синхронизации он уже актуальный.
     try:
-        content = db.get_subscription_content(
-            user_id
+        content = (
+            db.get_subscription_content(
+                user_id
+            )
         )
     except Exception:
         content = None
@@ -2048,10 +2649,16 @@ def subscription(token):
         mimetype="text/plain",
     )
 
-    response.headers["Cache-Control"] = (
+    response.headers[
+        "Cache-Control"
+    ] = (
         "no-store, no-cache, "
         "must-revalidate, max-age=0"
     )
+
+    response.headers[
+        "Pragma"
+    ] = "no-cache"
 
     return response
 
@@ -2060,7 +2667,9 @@ def subscription(token):
 # OLD /s/ LINK
 # ============================================================
 
-@app.route("/s/<token>")
+@app.route(
+    "/s/<token>"
+)
 def subscription_page(token):
     user_id = parse_token(
         token
@@ -2080,6 +2689,7 @@ def subscription_page(token):
 
 ADMIN_CSS = """
 <style>
+
 * {
     box-sizing: border-box;
 }
@@ -2087,6 +2697,7 @@ ADMIN_CSS = """
 body {
     margin: 0;
     min-height: 100vh;
+
     background:
         radial-gradient(
             circle at 50% -10%,
@@ -2094,7 +2705,9 @@ body {
             transparent 35%
         ),
         #07030d;
+
     color: #fff;
+
     font-family:
         -apple-system,
         BlinkMacSystemFont,
@@ -2112,16 +2725,23 @@ a {
         calc(100% - 26px),
         900px
     );
+
     margin: auto;
+
     padding:
         20px 0 50px;
 }
 
 .header {
     display: flex;
+
     align-items: center;
-    justify-content: space-between;
+
+    justify-content:
+        space-between;
+
     gap: 10px;
+
     margin-bottom: 20px;
 }
 
@@ -2132,44 +2752,72 @@ a {
 
 .nav {
     display: flex;
+
     gap: 7px;
+
     flex-wrap: wrap;
 }
 
 .nav a {
     padding: 9px 12px;
+
     border-radius: 12px;
-    background: rgba(255,255,255,.05);
+
+    background:
+        rgba(255,255,255,.05);
+
     text-decoration: none;
+
     color: #b6adbf;
+
     font-size: 12px;
 }
 
 .card {
     padding: 18px;
+
     margin-bottom: 12px;
+
     border-radius: 22px;
-    background: rgba(20,10,32,.78);
-    border: 1px solid rgba(180,100,255,.13);
-    box-shadow: 0 18px 60px rgba(0,0,0,.2);
+
+    background:
+        rgba(20,10,32,.78);
+
+    border:
+        1px solid
+        rgba(180,100,255,.13);
+
+    box-shadow:
+        0 18px 60px
+        rgba(0,0,0,.2);
 }
 
 .grid {
     display: grid;
+
     grid-template-columns:
-        repeat(auto-fit,minmax(150px,1fr));
+        repeat(
+            auto-fit,
+            minmax(150px,1fr)
+        );
+
     gap: 9px;
 }
 
 .stat {
     padding: 15px;
+
     border-radius: 17px;
-    background: rgba(255,255,255,.035);
+
+    background:
+        rgba(255,255,255,.035);
 }
 
 .stat .num {
     font-size: 26px;
+
     font-weight: 900;
+
     margin-top: 6px;
 }
 
@@ -2183,66 +2831,105 @@ a {
 
 .search {
     display: flex;
+
     gap: 8px;
 }
 
 input,
 select {
     width: 100%;
+
     height: 48px;
+
     padding: 0 13px;
+
     border-radius: 14px;
-    border: 1px solid rgba(255,255,255,.09);
+
+    border:
+        1px solid
+        rgba(255,255,255,.09);
+
     outline: none;
-    background: rgba(255,255,255,.045);
+
+    background:
+        rgba(255,255,255,.045);
+
     color: white;
 }
 
 button,
 .button {
     min-height: 46px;
+
     padding: 0 15px;
+
     border: 0;
+
     border-radius: 14px;
+
     background:
         linear-gradient(
             135deg,
             #9b5cff,
             #6d2cff
         );
+
     color: white;
+
     font-weight: 850;
+
     text-decoration: none;
+
     display: inline-flex;
+
     align-items: center;
+
     justify-content: center;
+
     cursor: pointer;
 }
 
 .button.secondary {
-    background: rgba(255,255,255,.06);
-    border: 1px solid rgba(255,255,255,.08);
+    background:
+        rgba(255,255,255,.06);
+
+    border:
+        1px solid
+        rgba(255,255,255,.08);
 }
 
 .button.danger {
-    background: rgba(255,65,85,.13);
+    background:
+        rgba(255,65,85,.13);
+
     color: #ff9aa6;
 }
 
 .user {
     display: flex;
+
     align-items: center;
-    justify-content: space-between;
+
+    justify-content:
+        space-between;
+
     gap: 12px;
+
     padding: 14px;
+
     margin-top: 8px;
+
     border-radius: 16px;
-    background: rgba(255,255,255,.035);
+
+    background:
+        rgba(255,255,255,.035);
+
     text-decoration: none;
 }
 
 .user:hover {
-    background: rgba(255,255,255,.065);
+    background:
+        rgba(255,255,255,.065);
 }
 
 .user-main {
@@ -2255,42 +2942,59 @@ button,
 
 .user-id {
     margin-top: 4px;
+
     color: #766d7e;
+
     font-size: 11px;
 }
 
 .badge {
     white-space: nowrap;
+
     padding: 7px 10px;
+
     border-radius: 999px;
+
     font-size: 11px;
+
     font-weight: 800;
 }
 
 .badge.active {
     color: #91ffbd;
-    background: rgba(90,255,160,.1);
+
+    background:
+        rgba(90,255,160,.1);
 }
 
 .badge.trial {
     color: #d9a5ff;
-    background: rgba(160,80,255,.12);
+
+    background:
+        rgba(160,80,255,.12);
 }
 
 .badge.expired {
     color: #ff8997;
-    background: rgba(255,80,100,.1);
+
+    background:
+        rgba(255,80,100,.1);
 }
 
 .badge.none {
     color: #aaa1ae;
-    background: rgba(255,255,255,.05);
+
+    background:
+        rgba(255,255,255,.05);
 }
 
 .actions {
     display: flex;
+
     flex-wrap: wrap;
+
     gap: 8px;
+
     margin-top: 10px;
 }
 
@@ -2300,22 +3004,31 @@ button,
 
 .pagination {
     display: flex;
+
     gap: 8px;
+
     justify-content: center;
+
     margin-top: 16px;
 }
 
 table {
     width: 100%;
-    border-collapse: collapse;
+
+    border-collapse:
+        collapse;
 }
 
 td,
 th {
     padding: 10px 6px;
+
     border-bottom:
-        1px solid rgba(255,255,255,.06);
+        1px solid
+        rgba(255,255,255,.06);
+
     text-align: left;
+
     font-size: 12px;
 }
 
@@ -2325,23 +3038,52 @@ th {
 
 .notice {
     padding: 13px;
+
     margin-bottom: 12px;
+
     border-radius: 14px;
-    background: rgba(90,255,160,.08);
+
+    background:
+        rgba(90,255,160,.08);
+
     color: #9dffc1;
 }
 
 .error {
     padding: 13px;
+
     margin-bottom: 12px;
+
     border-radius: 14px;
-    background: rgba(255,70,90,.1);
+
+    background:
+        rgba(255,70,90,.1);
+
     color: #ff9aa6;
 }
 
+.sync-source {
+    margin-top: 8px;
+
+    padding: 11px;
+
+    border-radius: 12px;
+
+    background:
+        rgba(255,255,255,.035);
+
+    color: #8e8497;
+
+    font-size: 11px;
+
+    word-break: break-all;
+}
+
 @media(max-width:600px) {
+
     .search {
-        flex-direction: column;
+        flex-direction:
+            column;
     }
 
     table {
@@ -2352,7 +3094,9 @@ th {
     th {
         padding: 8px 4px;
     }
+
 }
+
 </style>
 """
 
@@ -2363,15 +3107,20 @@ def admin_page(
 ):
     page = f"""
 <!doctype html>
+
 <html lang="ru">
 
 <head>
+
 <meta charset="utf-8">
+
 <meta name="viewport"
-      content="width=device-width,initial-scale=1">
+      content="width=device-width,
+      initial-scale=1">
 
 <title>
-ixxy VPN — {html.escape(title)}
+ixxy VPN —
+{html.escape(title)}
 </title>
 
 {ADMIN_CSS}
@@ -2389,12 +3138,17 @@ ixxy VPN — {html.escape(title)}
     </div>
 
     <div class="nav">
+
         <a href="/admin">
             📊 Статистика
         </a>
 
         <a href="/admin/users">
             👥 Пользователи
+        </a>
+
+        <a href="/admin/payments">
+            💳 Платежи
         </a>
 
         <a href="/cabinet">
@@ -2404,6 +3158,7 @@ ixxy VPN — {html.escape(title)}
         <a href="/logout">
             Выйти
         </a>
+
     </div>
 
 </div>
@@ -2453,10 +3208,13 @@ def admin():
     registrations_30 = 0
 
     for user in users:
-        status, status_type, _days = (
-            get_user_subscription_status(
-                user
-            )
+
+        (
+            status,
+            status_type,
+            _days,
+        ) = get_user_subscription_status(
+            user
         )
 
         if status_type == "active":
@@ -2471,13 +3229,16 @@ def admin():
         elif status_type == "none":
             none_users += 1
 
+        # Оставляем статистику VIP,
+        # если старые данные её используют.
         subscription = str(
             user_field(
                 user,
                 3,
                 "subscription",
                 "",
-            ) or ""
+            )
+            or ""
         ).lower()
 
         if (
@@ -2498,6 +3259,7 @@ def admin():
         )
 
         if created_dt:
+
             age = (
                 now - created_dt
             ).total_seconds()
@@ -2518,17 +3280,20 @@ def admin():
     payment_pending = 0
     payment_paid = 0
     payment_failed = 0
+
     total_days = 0
     total_income = 0
 
     for payment in payments:
+
         status = str(
             payment_field(
                 payment,
                 5,
                 "status",
                 "",
-            ) or ""
+            )
+            or ""
         ).lower()
 
         if status in (
@@ -2560,7 +3325,8 @@ def admin():
                     3,
                     "days",
                     0,
-                ) or 0
+                )
+                or 0
             )
         except Exception:
             pass
@@ -2578,27 +3344,16 @@ def admin():
                         2,
                         "amount",
                         0,
-                    ) or 0
+                    )
+                    or 0
                 )
             except Exception:
                 pass
 
-    stats_func = getattr(
-        db,
-        "get_stats",
-        None,
-    )
-
-    db_stats = {}
-
-    if stats_func:
-        try:
-            db_stats = stats_func() or {}
-        except Exception:
-            db_stats = {}
-
     body = f"""
-<h1>📊 Админ-панель</h1>
+<h1>
+📊 Админ-панель
+</h1>
 
 <div class="grid">
 
@@ -2606,6 +3361,7 @@ def admin():
     <div class="muted small">
         Всего пользователей
     </div>
+
     <div class="num">
         {total_users}
     </div>
@@ -2615,6 +3371,7 @@ def admin():
     <div class="muted small">
         🟢 Активные
     </div>
+
     <div class="num">
         {active_users}
     </div>
@@ -2624,6 +3381,7 @@ def admin():
     <div class="muted small">
         🎁 Trial
     </div>
+
     <div class="num">
         {trial_users}
     </div>
@@ -2633,6 +3391,7 @@ def admin():
     <div class="muted small">
         👑 VIP
     </div>
+
     <div class="num">
         {vip_users}
     </div>
@@ -2642,6 +3401,7 @@ def admin():
     <div class="muted small">
         🔴 Истекшие
     </div>
+
     <div class="num">
         {expired_users}
     </div>
@@ -2651,6 +3411,7 @@ def admin():
     <div class="muted small">
         ⚪ Без подписки
     </div>
+
     <div class="num">
         {none_users}
     </div>
@@ -2660,12 +3421,15 @@ def admin():
 
 <div class="card">
 
-<h2>👥 Регистрации</h2>
+<h2>
+👥 Регистрации
+</h2>
 
 <div class="grid">
 
 <div class="stat">
     Сегодня
+
     <div class="num">
         {registrations_today}
     </div>
@@ -2673,6 +3437,7 @@ def admin():
 
 <div class="stat">
     7 дней
+
     <div class="num">
         {registrations_7}
     </div>
@@ -2680,6 +3445,7 @@ def admin():
 
 <div class="stat">
     30 дней
+
     <div class="num">
         {registrations_30}
     </div>
@@ -2691,12 +3457,15 @@ def admin():
 
 <div class="card">
 
-<h2>💳 Платежи</h2>
+<h2>
+💳 Платежи
+</h2>
 
 <div class="grid">
 
 <div class="stat">
     Всего
+
     <div class="num">
         {payment_total}
     </div>
@@ -2704,6 +3473,7 @@ def admin():
 
 <div class="stat">
     Успешные
+
     <div class="num">
         {payment_paid}
     </div>
@@ -2711,6 +3481,7 @@ def admin():
 
 <div class="stat">
     Ожидают
+
     <div class="num">
         {payment_pending}
     </div>
@@ -2718,6 +3489,7 @@ def admin():
 
 <div class="stat">
     Ошибки
+
     <div class="num">
         {payment_failed}
     </div>
@@ -2725,6 +3497,7 @@ def admin():
 
 <div class="stat">
     Дней оплачено
+
     <div class="num">
         {total_days}
     </div>
@@ -2732,6 +3505,7 @@ def admin():
 
 <div class="stat">
     Доход
+
     <div class="num">
         {total_income} ₽
     </div>
@@ -2741,26 +3515,50 @@ def admin():
 
 </div>
 
+<div class="card">
+
+<h2>
+🔄 Серверы
+</h2>
+
+<p class="muted">
+Кнопка ниже заново получает
+актуальные servers.txt и
+no_servers.txt с GitHub и
+обновляет подписки всех
+пользователей.
+</p>
+
 <div class="actions">
 
-<a class="button"
-   href="/admin/users">
+<a
+    class="button"
+    href="/admin/sync">
+    🔄 Обновить серверы
+</a>
+
+<a
+    class="button secondary"
+    href="/admin/users">
     👥 Пользователи
 </a>
 
-<a class="button secondary"
-   href="/admin/payments">
+<a
+    class="button secondary"
+    href="/admin/payments">
     💳 Платежи
 </a>
 
-<a class="button secondary"
-   href="/admin/sync">
-    🔄 Синхронизировать
-</a>
+</div>
 
-<a class="button secondary"
-   href="/admin">
-    🔃 Обновить
+</div>
+
+<div class="actions">
+
+<a
+    class="button secondary"
+    href="/admin">
+    🔃 Обновить статистику
 </a>
 
 </div>
@@ -2776,7 +3574,9 @@ def admin():
 # ADMIN USERS
 # ============================================================
 
-@app.route("/admin/users")
+@app.route(
+    "/admin/users"
+)
 def admin_users():
     denied = require_admin()
 
@@ -2804,11 +3604,14 @@ def admin_users():
     users = get_admin_users()
 
     if query:
-        query_lower = query.lower()
+        query_lower = (
+            query.lower()
+        )
 
         filtered = []
 
         for user in users:
+
             user_id = str(
                 user_field(
                     user,
@@ -2837,9 +3640,12 @@ def admin_users():
             )
 
             if (
-                query_lower in user_id.lower()
-                or query_lower in username.lower()
-                or query_lower in first_name.lower()
+                query_lower
+                in user_id.lower()
+                or query_lower
+                in username.lower()
+                or query_lower
+                in first_name.lower()
             ):
                 filtered.append(user)
 
@@ -2857,7 +3663,10 @@ def admin_users():
         // per_page,
     )
 
-    if page_number > total_pages:
+    if (
+        page_number
+        > total_pages
+    ):
         page_number = total_pages
 
     start = (
@@ -2865,14 +3674,18 @@ def admin_users():
     ) * per_page
 
     current_users = users[
-        start:start + per_page
+        start:
+        start + per_page
     ]
 
     users_html = ""
 
     for user in current_users:
-        user_id = get_admin_user_id(
-            user
+
+        user_id = (
+            get_admin_user_id(
+                user
+            )
         )
 
         if user_id is None:
@@ -2882,18 +3695,34 @@ def admin_users():
             user
         )
 
-        status, status_type, days = (
+        (
+            status,
+            status_type,
+            days,
+        ) = (
             get_user_subscription_status(
                 user
             )
         )
 
-        if status_type == "active":
+        if (
+            status_type
+            == "active"
+        ):
             badge_class = "active"
-        elif status_type == "trial":
+
+        elif (
+            status_type
+            == "trial"
+        ):
             badge_class = "trial"
-        elif status_type == "expired":
+
+        elif (
+            status_type
+            == "expired"
+        ):
             badge_class = "expired"
+
         else:
             badge_class = "none"
 
@@ -2908,13 +3737,16 @@ def admin_users():
 
         if username:
             username_text = (
-                "@" +
-                str(username).lstrip("@")
+                "@"
+                + str(
+                    username
+                ).lstrip("@")
             )
 
         users_html += f"""
-<a class="user"
-   href="{admin_user_url(user_id)}">
+<a
+    class="user"
+    href="{admin_user_url(user_id)}">
 
     <div class="user-main">
 
@@ -2924,15 +3756,30 @@ def admin_users():
 
         <div class="user-id">
             ID: {user_id}
-            {" • " + safe_text(username_text)
-             if username_text else ""}
+
+            {
+                " • "
+                + safe_text(
+                    username_text
+                )
+                if username_text
+                else ""
+            }
         </div>
 
     </div>
 
-    <span class="badge {badge_class}">
+    <span
+        class="badge {badge_class}">
+
         {html.escape(status)}
-        {f" • {days}д" if days else ""}
+
+        {
+            f" • {days}д"
+            if days
+            else ""
+        }
+
     </span>
 
 </a>
@@ -2947,28 +3794,36 @@ def admin_users():
 
     if page_number > 1:
         pagination_html += f"""
-<a class="button secondary"
-   href="/admin/users?q={quote(query)}&page={page_number-1}">
+<a
+    class="button secondary"
+    href="/admin/users?q={quote(query)}&page={page_number-1}">
     ← Назад
 </a>
 """
 
-    if page_number < total_pages:
+    if (
+        page_number
+        < total_pages
+    ):
         pagination_html += f"""
-<a class="button secondary"
-   href="/admin/users?q={quote(query)}&page={page_number+1}">
+<a
+    class="button secondary"
+    href="/admin/users?q={quote(query)}&page={page_number+1}">
     Далее →
 </a>
 """
 
     body = f"""
-<h1>👥 Пользователи</h1>
+<h1>
+👥 Пользователи
+</h1>
 
 <div class="card">
 
-<form class="search"
-      method="get"
-      action="/admin/users">
+<form
+    class="search"
+    method="get"
+    action="/admin/users">
 
     <input
         name="q"
@@ -3014,7 +3869,9 @@ def admin_users():
 @app.route(
     "/admin/user/<int:user_id>"
 )
-def admin_user_profile(user_id):
+def admin_user_profile(
+    user_id
+):
     denied = require_admin()
 
     if denied:
@@ -3034,17 +3891,23 @@ def admin_user_profile(user_id):
             """,
         )
 
-    status, status_type, days = (
+    (
+        status,
+        status_type,
+        days,
+    ) = (
         get_user_subscription_status(
             user
         )
     )
 
-    subscription_until = user_field(
-        user,
-        4,
-        "subscription_until",
-        None,
+    subscription_until = (
+        user_field(
+            user,
+            4,
+            "subscription_until",
+            None,
+        )
     )
 
     username = user_field(
@@ -3072,121 +3935,172 @@ def admin_user_profile(user_id):
         user_id
     )
 
-    subscription_url = build_subscription_url(
-        token
+    subscription_url = (
+        build_subscription_url(
+            token
+        )
     )
 
-    payments = get_admin_user_payments(
-        user_id
+    payments = (
+        get_admin_user_payments(
+            user_id
+        )
     )
 
     payments_html = ""
 
     for payment in payments:
-        payment_id = payment_field(
-            payment,
-            0,
-            "id",
-            "—",
+
+        payment_id = (
+            payment_field(
+                payment,
+                0,
+                "id",
+                "—",
+            )
         )
 
-        amount = payment_field(
-            payment,
-            2,
-            "amount",
-            "—",
+        amount = (
+            payment_field(
+                payment,
+                2,
+                "amount",
+                "—",
+            )
         )
 
-        days_paid = payment_field(
-            payment,
-            3,
-            "days",
-            "—",
+        days_paid = (
+            payment_field(
+                payment,
+                3,
+                "days",
+                "—",
+            )
         )
 
-        external_id = payment_field(
-            payment,
-            4,
-            "external_id",
-            "—",
+        payment_status = (
+            payment_field(
+                payment,
+                5,
+                "status",
+                "—",
+            )
         )
 
-        payment_status = payment_field(
-            payment,
-            5,
-            "status",
-            "—",
-        )
-
-        created_at = payment_field(
-            payment,
-            6,
-            "created_at",
-            None,
+        created_at = (
+            payment_field(
+                payment,
+                6,
+                "created_at",
+                None,
+            )
         )
 
         payments_html += f"""
 <tr>
-<td>{safe_text(payment_id)}</td>
-<td>{safe_text(amount)} ₽</td>
-<td>{safe_text(days_paid)}</td>
-<td>{safe_text(payment_status)}</td>
-<td>{format_datetime(created_at)}</td>
+
+<td>
+{safe_text(payment_id)}
+</td>
+
+<td>
+{safe_text(amount)} ₽
+</td>
+
+<td>
+{safe_text(days_paid)}
+</td>
+
+<td>
+{safe_text(payment_status)}
+</td>
+
+<td>
+{format_datetime(created_at)}
+</td>
+
 </tr>
 """
 
     if not payments_html:
         payments_html = """
 <tr>
+
 <td colspan="5">
-    <span class="muted">
-        Платежей нет
-    </span>
+
+<span class="muted">
+Платежей нет
+</span>
+
 </td>
+
 </tr>
 """
 
+    safe_subscription_url = (
+        html.escape(
+            subscription_url,
+            quote=True,
+        )
+    )
+
     body = f"""
-<h1>👤 Пользователь</h1>
+<h1>
+👤 Пользователь
+</h1>
 
 <div class="card">
 
 <div class="grid">
 
 <div class="stat">
+
     <div class="muted small">
         Telegram ID
     </div>
+
     <div class="num">
         {user_id}
     </div>
+
 </div>
 
 <div class="stat">
+
     <div class="muted small">
         Статус
     </div>
+
     <div class="num">
         {html.escape(status)}
     </div>
+
 </div>
 
 <div class="stat">
+
     <div class="muted small">
         Осталось
     </div>
+
     <div class="num">
         {days} дн.
     </div>
+
 </div>
 
 <div class="stat">
+
     <div class="muted small">
         До
     </div>
+
     <div class="num">
-        {format_date(subscription_until)}
+        {format_date(
+            subscription_until
+        )}
     </div>
+
 </div>
 
 </div>
@@ -3196,10 +4110,10 @@ def admin_user_profile(user_id):
 <div class="card">
 
 <h2>
-    {safe_text(
-        first_name,
-        "Пользователь"
-    )}
+{safe_text(
+    first_name,
+    "Пользователь"
+)}
 </h2>
 
 <p class="muted">
@@ -3212,51 +4126,55 @@ Username:
 {safe_text(subscription)}
 </p>
 
-<div class="copybox"
-     style="
-     display:flex;
-     gap:7px;
-     padding:6px;
-     background:#09050e;
-     border-radius:15px;
-     ">
+<div
+    class="copybox"
+    style="
+        display:flex;
+        gap:7px;
+        padding:6px;
+        background:#09050e;
+        border-radius:15px;
+    ">
 
 <input
     style="
-    flex:1;
-    min-width:0;
-    background:transparent;
-    border:0;
-    color:#aaa;
+        flex:1;
+        min-width:0;
+        background:transparent;
+        border:0;
+        color:#aaa;
     "
+
     readonly
-    value="{html.escape(
-        subscription_url,
-        quote=True
-    )}"
+
+    value="{safe_subscription_url}"
 >
 
 </div>
 
 <div class="actions">
 
-<a class="button"
-   href="{subscription_url}">
+<a
+    class="button"
+    href="{safe_subscription_url}">
     🔗 Открыть подписку
 </a>
 
-<a class="button secondary"
-   href="/admin/user/{user_id}/extend">
+<a
+    class="button secondary"
+    href="/admin/user/{user_id}/extend">
     ⏳ Продлить
 </a>
 
-<a class="button secondary"
-   href="/admin/user/{user_id}/disable">
+<a
+    class="button secondary"
+    href="/admin/user/{user_id}/disable">
     ❌ Отключить
 </a>
 
-<a class="button secondary"
-   href="/admin/users">
+<a
+    class="button secondary"
+    href="/admin/users">
     ← Пользователи
 </a>
 
@@ -3266,11 +4184,14 @@ Username:
 
 <div class="card">
 
-<h2>💳 Платежи пользователя</h2>
+<h2>
+💳 Платежи пользователя
+</h2>
 
 <table>
 
 <thead>
+
 <tr>
 <th>ID</th>
 <th>Сумма</th>
@@ -3278,6 +4199,7 @@ Username:
 <th>Статус</th>
 <th>Дата</th>
 </tr>
+
 </thead>
 
 <tbody>
@@ -3303,9 +4225,14 @@ Username:
 
 @app.route(
     "/admin/user/<int:user_id>/extend",
-    methods=["GET", "POST"],
+    methods=[
+        "GET",
+        "POST",
+    ],
 )
-def admin_extend(user_id):
+def admin_extend(
+    user_id
+):
     denied = require_admin()
 
     if denied:
@@ -3328,6 +4255,7 @@ def admin_extend(user_id):
     error = ""
 
     if request.method == "POST":
+
         raw_days = request.form.get(
             "days",
             "",
@@ -3349,6 +4277,8 @@ def admin_extend(user_id):
                 days,
             )
 
+            # После ручного продления
+            # обновляем его GitHub-файл.
             sync_subscription(
                 user_id
             )
@@ -3365,12 +4295,15 @@ def admin_extend(user_id):
     if error:
         error_html = f"""
         <div class="error">
-            Ошибка: {html.escape(error)}
+            Ошибка:
+            {html.escape(error)}
         </div>
         """
 
     body = f"""
-<h1>⏳ Продление подписки</h1>
+<h1>
+⏳ Продление подписки
+</h1>
 
 {error_html}
 
@@ -3384,39 +4317,55 @@ def admin_extend(user_id):
 <div class="actions">
 
 <form method="post">
-<input type="hidden"
-       name="days"
-       value="30">
+
+<input
+    type="hidden"
+    name="days"
+    value="30">
+
 <button>
 +30 дней
 </button>
+
 </form>
 
 <form method="post">
-<input type="hidden"
-       name="days"
-       value="90">
+
+<input
+    type="hidden"
+    name="days"
+    value="90">
+
 <button>
 +90 дней
 </button>
+
 </form>
 
 <form method="post">
-<input type="hidden"
-       name="days"
-       value="180">
+
+<input
+    type="hidden"
+    name="days"
+    value="180">
+
 <button>
 +180 дней
 </button>
+
 </form>
 
 <form method="post">
-<input type="hidden"
-       name="days"
-       value="365">
+
+<input
+    type="hidden"
+    name="days"
+    value="365">
+
 <button>
 +365 дней
 </button>
+
 </form>
 
 </div>
@@ -3425,7 +4374,9 @@ def admin_extend(user_id):
 
 <div class="card">
 
-<h2>✏️ Свой срок</h2>
+<h2>
+✏️ Свой срок
+</h2>
 
 <form method="post">
 
@@ -3469,9 +4420,14 @@ def admin_extend(user_id):
 
 @app.route(
     "/admin/user/<int:user_id>/disable",
-    methods=["GET", "POST"],
+    methods=[
+        "GET",
+        "POST",
+    ],
 )
-def admin_disable(user_id):
+def admin_disable(
+    user_id
+):
     denied = require_admin()
 
     if denied:
@@ -3492,17 +4448,32 @@ def admin_disable(user_id):
         )
 
     if request.method == "POST":
+
         try:
+
+            # Сначала пробуем старое имя.
             disable_func = getattr(
                 db,
                 "disable_subscription",
                 None,
             )
 
+            # В твоей текущей database.py
+            # функция может называться
+            # deactivate_subscription.
+            if not disable_func:
+                disable_func = getattr(
+                    db,
+                    "deactivate_subscription",
+                    None,
+                )
+
             if not disable_func:
                 raise RuntimeError(
                     "В database.py нет "
-                    "disable_subscription()"
+                    "disable_subscription() "
+                    "или "
+                    "deactivate_subscription()"
                 )
 
             disable_func(
@@ -3518,17 +4489,22 @@ def admin_disable(user_id):
             )
 
         except Exception as e:
+
             return admin_page(
                 "Ошибка",
                 f"""
                 <div class="error">
-                    {html.escape(str(e))}
+                    {html.escape(
+                        str(e)
+                    )}
                 </div>
                 """,
             )
 
     body = f"""
-<h1>❌ Отключение подписки</h1>
+<h1>
+❌ Отключение подписки
+</h1>
 
 <div class="card">
 
@@ -3541,16 +4517,23 @@ def admin_disable(user_id):
 <div class="actions">
 
 <form method="post">
-<button class="button danger"
-        type="submit">
+
+<button
+    class="button danger"
+    type="submit">
+
     Да, отключить
+
 </button>
+
 </form>
 
 <a
     class="button secondary"
     href="/admin/user/{user_id}">
+
     Отмена
+
 </a>
 
 </div>
@@ -3568,67 +4551,81 @@ def admin_disable(user_id):
 # ADMIN PAYMENTS
 # ============================================================
 
-@app.route("/admin/payments")
+@app.route(
+    "/admin/payments"
+)
 def admin_payments():
     denied = require_admin()
 
     if denied:
         return denied
 
-    payments = get_admin_payments()
+    payments = (
+        get_admin_payments()
+    )
 
     rows = ""
 
     for payment in reversed(
         payments[-100:]
     ):
-        payment_id = payment_field(
-            payment,
-            0,
-            "id",
-            "—",
+
+        payment_id = (
+            payment_field(
+                payment,
+                0,
+                "id",
+                "—",
+            )
         )
 
-        user_id = payment_field(
-            payment,
-            1,
-            "user_id",
-            "—",
+        user_id = (
+            payment_field(
+                payment,
+                1,
+                "user_id",
+                "—",
+            )
         )
 
-        amount = payment_field(
-            payment,
-            2,
-            "amount",
-            "—",
+        amount = (
+            payment_field(
+                payment,
+                2,
+                "amount",
+                "—",
+            )
         )
 
-        days = payment_field(
-            payment,
-            3,
-            "days",
-            "—",
+        days = (
+            payment_field(
+                payment,
+                3,
+                "days",
+                "—",
+            )
         )
 
-        external_id = payment_field(
-            payment,
-            4,
-            "external_id",
-            "",
+        status = (
+            payment_field(
+                payment,
+                5,
+                "status",
+                "—",
+            )
         )
 
-        status = payment_field(
-            payment,
-            5,
-            "status",
-            "—",
+        created_at = (
+            payment_field(
+                payment,
+                6,
+                "created_at",
+                None,
+            )
         )
 
-        created_at = payment_field(
-            payment,
-            6,
-            "created_at",
-            None,
+        safe_user_id = html.escape(
+            str(user_id)
         )
 
         rows += f"""
@@ -3639,9 +4636,12 @@ def admin_payments():
 </td>
 
 <td>
-<a href="/admin/user/{html.escape(str(user_id))}">
-{safe_text(user_id)}
+
+<a
+    href="/admin/user/{safe_user_id}">
+    {safe_text(user_id)}
 </a>
+
 </td>
 
 <td>
@@ -3666,22 +4666,29 @@ def admin_payments():
     if not rows:
         rows = """
 <tr>
+
 <td colspan="6">
+
 <span class="muted">
 Платежей пока нет.
 </span>
+
 </td>
+
 </tr>
 """
 
     body = f"""
-<h1>💳 Платежи</h1>
+<h1>
+💳 Платежи
+</h1>
 
 <div class="card">
 
 <table>
 
 <thead>
+
 <tr>
 <th>ID</th>
 <th>Пользователь</th>
@@ -3690,10 +4697,13 @@ def admin_payments():
 <th>Статус</th>
 <th>Дата</th>
 </tr>
+
 </thead>
 
 <tbody>
+
 {rows}
+
 </tbody>
 
 </table>
@@ -3711,69 +4721,255 @@ def admin_payments():
 # ADMIN SYNC
 # ============================================================
 
-@app.route("/admin/sync")
+@app.route(
+    "/admin/sync"
+)
 def admin_sync():
     denied = require_admin()
 
     if denied:
         return denied
 
-    users = get_admin_users()
+    # ========================================================
+    # ГЛАВНОЕ ИЗМЕНЕНИЕ
+    # ========================================================
+    #
+    # Здесь больше НЕ вызывается sync_subscription()
+    # отдельно для каждого пользователя.
+    #
+    # Вместо этого:
+    #
+    # 1. Загружается актуальный servers.txt.
+    # 2. Загружается актуальный no_servers.txt.
+    # 3. Все пользователи получают правильный файл.
+    #
+    # Активные:
+    #   users/<ID>.txt = servers.txt
+    #
+    # Истёкшие:
+    #   users/<ID>.txt = no_servers.txt
+    #
+    # URL пользователя при этом НЕ меняется.
+    # ========================================================
 
-    success = 0
-    failed = 0
+    result = (
+        sync_all_subscriptions()
+    )
 
-    for user in users:
-        user_id = get_admin_user_id(
-            user
-        )
+    total = result.get(
+        "total",
+        0,
+    )
 
-        if user_id is None:
-            continue
+    success = result.get(
+        "success",
+        0,
+    )
 
-        if sync_subscription(
-            user_id
-        ):
-            success += 1
-        else:
-            failed += 1
+    failed = result.get(
+        "failed",
+        0,
+    )
+
+    active_count = result.get(
+        "active",
+        0,
+    )
+
+    inactive_count = result.get(
+        "inactive",
+        0,
+    )
+
+    errors = result.get(
+        "errors",
+        [],
+    )
+
+    if failed == 0:
+        notice = """
+        <div class="notice">
+            ✅ Все подписки успешно
+            синхронизированы.
+        </div>
+        """
+    else:
+        notice = f"""
+        <div class="error">
+            ⚠️ Синхронизация завершена
+            с ошибками.
+            Ошибок: {failed}
+        </div>
+        """
+
+    errors_html = ""
+
+    if errors:
+
+        shown_errors = errors[:30]
+
+        error_items = ""
+
+        for error in shown_errors:
+            error_items += (
+                "<li>"
+                + html.escape(
+                    str(error)
+                )
+                + "</li>"
+            )
+
+        more = ""
+
+        if len(errors) > 30:
+            more = (
+                f"<li>И ещё "
+                f"{len(errors) - 30} "
+                f"ошибок...</li>"
+            )
+
+        errors_html = f"""
+<div class="card">
+
+<h2>
+⚠️ Ошибки
+</h2>
+
+<ul>
+{error_items}
+{more}
+</ul>
+
+</div>
+"""
 
     body = f"""
-<h1>🔄 Синхронизация</h1>
+<h1>
+🔄 Синхронизация серверов
+</h1>
+
+{notice}
 
 <div class="card">
 
 <div class="grid">
 
 <div class="stat">
-    Успешно
-    <div class="num">
-        {success}
+
+    <div class="muted small">
+        Всего пользователей
     </div>
+
+    <div class="num">
+        {total}
+    </div>
+
 </div>
 
 <div class="stat">
-    Ошибки
+
+    <div class="muted small">
+        🟢 Активных
+    </div>
+
+    <div class="num">
+        {active_count}
+    </div>
+
+</div>
+
+<div class="stat">
+
+    <div class="muted small">
+        🔴 Неактивных
+    </div>
+
+    <div class="num">
+        {inactive_count}
+    </div>
+
+</div>
+
+<div class="stat">
+
+    <div class="muted small">
+        ✅ Обновлено
+    </div>
+
+    <div class="num">
+        {success}
+    </div>
+
+</div>
+
+<div class="stat">
+
+    <div class="muted small">
+        ❌ Ошибок
+    </div>
+
     <div class="num">
         {failed}
     </div>
+
 </div>
 
 </div>
+
+</div>
+
+<div class="card">
+
+<h2>
+📡 Источники
+</h2>
+
+<div class="sync-source">
+https://raw.githubusercontent.com/
+{html.escape(GITHUB_OWNER)}/
+{html.escape(GITHUB_REPO)}/
+{html.escape(GITHUB_BRANCH)}/
+servers.txt
+</div>
+
+<div class="sync-source">
+https://raw.githubusercontent.com/
+{html.escape(GITHUB_OWNER)}/
+{html.escape(GITHUB_REPO)}/
+{html.escape(GITHUB_BRANCH)}/
+no_servers.txt
+</div>
+
+<p class="muted small">
+Активные пользователи получают
+servers.txt.
+Истёкшие и неактивные —
+no_servers.txt.
+</p>
+
+</div>
+
+{errors_html}
 
 <div class="actions">
 
-<a class="button"
-   href="/admin">
+<a
+    class="button"
+    href="/admin">
     ← Админка
 </a>
 
-<a class="button secondary"
-   href="/admin/sync">
+<a
+    class="button secondary"
+    href="/admin/sync">
     🔄 Повторить
 </a>
 
-</div>
+<a
+    class="button secondary"
+    href="/admin/users">
+    👥 Пользователи
+</a>
 
 </div>
 """
@@ -3788,7 +4984,9 @@ def admin_sync():
 # HEALTH
 # ============================================================
 
-@app.route("/health")
+@app.route(
+    "/health"
+)
 def health():
     response = Response(
         '{"service":"ixxyweb","status":"ok"}',
@@ -3818,6 +5016,7 @@ def not_found(error):
 # ============================================================
 
 if __name__ == "__main__":
+
     port = int(
         os.getenv(
             "PORT",
