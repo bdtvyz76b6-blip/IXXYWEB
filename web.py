@@ -989,11 +989,14 @@ def cabinet():
         subscription_until
     )
 
+    # ========================================================
+    # ТЕКУЩИЙ ФОРМАТ ССЫЛКИ
+    # ========================================================
+
     token = make_token(user_id)
 
-    subscription_url = (
-        get_subscription_link(user_id)
-        or build_subscription_url(token)
+    subscription_url = build_subscription_url(
+        token
     )
 
     happ_url = build_happ_url(token)
