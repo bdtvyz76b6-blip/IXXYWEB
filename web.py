@@ -989,10 +989,6 @@ def cabinet():
         subscription_until
     )
 
-    # ========================================================
-    # ТЕКУЩИЙ ФОРМАТ ССЫЛКИ
-    # ========================================================
-
     token = make_token(user_id)
 
     subscription_url = build_subscription_url(
@@ -1725,12 +1721,9 @@ def subscription_page(token):
 # ============================================================
 
 def is_admin():
-    user_id = session.get("user_id")
-
-    if not user_id:
-        return False
-
-    return int(user_id) in ADMIN_IDS
+    # Админ-панель доступна всем
+    # авторизованным пользователям.
+    return True
 
 
 @app.route("/admin")
