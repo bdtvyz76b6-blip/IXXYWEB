@@ -83,10 +83,204 @@ def get_user(user_id):
             if not row:
                 return None
 
-            # Возвращаем список в привычном для web.py порядке:
-            # user_id, username, first_name, subscription,
-            # subscription_until, ...
             return tuple(row.values())
+
+    finally:
+        conn.close()
+
+
+def get_user_by_login(login):
+    """
+    Поиск пользователя по Telegram ID или username.
+
+    Можно вводить:
+        123456789
+        @username
+        username
+    """
+
+    if login is None:
+        return None
+
+    login = str(login).strip()
+
+    if not login:
+        return None
+
+    conn = get_conn()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            if login.isdigit():
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM users
+                    WHERE user_id = %s
+                    LIMIT 1
+                    """,
+                    (int(login),),
+                )
+
+            else:
+                username = login.lstrip("@").strip()
+
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM users
+                    WHERE LOWER(username) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (username,),
+                )
+
+            return cur.fetchone()
+
+    finally:
+        conn.close()
+
+
+def register_user(login):
+    """
+    Регистрация пользователя на сайте.
+
+    Регистрация не использует Telegram API
+    и не требует работающего бота.
+
+    Если пользователь уже есть в users,
+    возвращается существующий пользователь.
+
+    Если введён Telegram ID:
+        создаётся пользователь с этим ID.
+
+    Если введён username:
+        создать пользователя без Telegram ID
+        невозможно, поэтому возвращается ошибка.
+    """
+
+    if login is None:
+        raise ValueError("Введите Telegram ID или username")
+
+    login = str(login).strip()
+
+    if not login:
+        raise ValueError("Введите Telegram ID или username")
+
+    existing = get_user_by_login(login)
+
+    if existing:
+        return existing
+
+    if not login.isdigit():
+        raise ValueError(
+            "Для первой регистрации нужен Telegram ID"
+        )
+
+    user_id = int(login)
+
+    columns = get_user_columns()
+
+    insert_columns = []
+    insert_values = []
+
+    if "user_id" not in columns:
+        raise RuntimeError(
+            "В таблице users нет user_id"
+        )
+
+    insert_columns.append("user_id")
+    insert_values.append(user_id)
+
+    if "username" in columns:
+        insert_columns.append("username")
+        insert_values.append(None)
+
+    if "first_name" in columns:
+        insert_columns.append("first_name")
+        insert_values.append(None)
+
+    if "subscription" in columns:
+        insert_columns.append("subscription")
+        insert_values.append("inactive")
+
+    if "subscription_until" in columns:
+        insert_columns.append("subscription_until")
+        insert_values.append(None)
+
+    if "trial_used" in columns:
+        insert_columns.append("trial_used")
+        insert_values.append(False)
+
+    if "pending_days" in columns:
+        insert_columns.append("pending_days")
+        insert_values.append(0)
+
+    if "notify" in columns:
+        insert_columns.append("notify")
+        insert_values.append(True)
+
+    if "accepted_terms" in columns:
+        insert_columns.append("accepted_terms")
+        insert_values.append(True)
+
+    if "created_at" in columns:
+        insert_columns.append("created_at")
+        insert_values.append(datetime.now(timezone.utc))
+
+    placeholders = ", ".join(
+        ["%s"] * len(insert_values)
+    )
+
+    column_sql = ", ".join(
+        f'"{column}"'
+        for column in insert_columns
+    )
+
+    conn = get_conn()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(
+                f"""
+                INSERT INTO users
+                    ({column_sql})
+                VALUES
+                    ({placeholders})
+                ON CONFLICT (user_id)
+                DO NOTHING
+                RETURNING *
+                """,
+                tuple(insert_values),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM users
+                    WHERE user_id = %s
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+
+                row = cur.fetchone()
+
+        conn.commit()
+
+        return row
+
+    except Exception:
+        conn.rollback()
+        raise
 
     finally:
         conn.close()
@@ -244,6 +438,7 @@ def update_subscription_data(
         updates.append(
             '"subscription" = %s'
         )
+
         values.append(
             "active"
             if subscription_until
@@ -403,14 +598,10 @@ def create_payment(
     external_id,
     status="pending",
 ):
-    columns = get_user_columns()
-
     conn = get_conn()
 
     try:
         with conn.cursor() as cur:
-
-            # Проверяем существование payments.
             cur.execute(
                 """
                 SELECT EXISTS (
@@ -560,7 +751,6 @@ def get_stats():
 
     try:
         with conn.cursor() as cur:
-
             cur.execute(
                 """
                 SELECT COUNT(*)
