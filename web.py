@@ -1,10 +1,8 @@
 import os
 import html
-import hashlib
-import hmac
 import json
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import requests
@@ -19,6 +17,8 @@ from flask import (
 
 from database import (
     get_user,
+    get_user_by_login,
+    register_user,
     get_subscription_content,
     get_subscription_link,
     extend_subscription,
@@ -62,16 +62,6 @@ SUBSCRIPTION_PREFIX = os.getenv(
     "SUBSCRIPTION_PREFIX",
     "2ix847xy",
 ).strip()
-
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    "",
-).strip()
-
-TELEGRAM_BOT_USERNAME = os.getenv(
-    "TELEGRAM_BOT_USERNAME",
-    "",
-).strip().lstrip("@")
 
 TELEGRAM_URL = os.getenv(
     "TELEGRAM_URL",
@@ -271,56 +261,6 @@ def no_cache(response):
 
 
 # ============================================================
-# TELEGRAM LOGIN
-# ============================================================
-
-def verify_telegram_auth(data):
-    if not BOT_TOKEN:
-        return False
-
-    received_hash = data.get("hash")
-
-    if not received_hash:
-        return False
-
-    try:
-        auth_date = int(data.get("auth_date", "0"))
-    except Exception:
-        return False
-
-    # Telegram login data старше 24 часов не принимаем.
-    if abs(int(now_utc().timestamp()) - auth_date) > 86400:
-        return False
-
-    check_data = []
-
-    for key in sorted(data.keys()):
-        if key == "hash":
-            continue
-
-        check_data.append(
-            f"{key}={data[key]}"
-        )
-
-    data_check_string = "\n".join(check_data)
-
-    secret_key = hashlib.sha256(
-        BOT_TOKEN.encode("utf-8")
-    ).digest()
-
-    calculated_hash = hmac.new(
-        secret_key,
-        data_check_string.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(
-        calculated_hash,
-        received_hash,
-    )
-
-
-# ============================================================
 # GITHUB
 # ============================================================
 
@@ -431,14 +371,12 @@ def active_subscription_content(
     )
 
     try:
-        servers_path = "servers.txt"
-
         url = (
             f"https://raw.githubusercontent.com/"
             f"{GITHUB_OWNER}/"
             f"{GITHUB_REPO}/"
             f"{GITHUB_BRANCH}/"
-            f"{servers_path}"
+            f"servers.txt"
         )
 
         response = requests.get(
@@ -454,6 +392,9 @@ def active_subscription_content(
         servers = ""
 
     content = (
+        'id="1obn2u"\n'
+        'id="rsz5kg"\n'
+        'id="65uefq"\n'
         'id="f66b5v"\n'
         'id="ps27vy"\n'
         '#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
@@ -473,6 +414,9 @@ def active_subscription_content(
 
 def inactive_subscription_content():
     return (
+        'id="rp03e1"\n'
+        'id="kx1hv9"\n'
+        'id="zkoq0g"\n'
         'id="67cogr"\n'
         'id="gdiay7"\n'
         '#profile-title: 𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️\n'
@@ -521,8 +465,6 @@ def sync_subscription(user_id):
             content,
         )
     except Exception:
-        # GitHub может быть временно недоступен.
-        # Сам сайт и DB от этого не падают.
         pass
 
     return True
@@ -622,7 +564,10 @@ def extract_payment_url(data):
     for key in possible_keys:
         value = data.get(key)
 
-        if isinstance(value, str) and value.startswith("http"):
+        if (
+            isinstance(value, str)
+            and value.startswith("http")
+        ):
             return value
 
     transaction = data.get(
@@ -654,9 +599,6 @@ def verify_cashera_webhook():
     if api_key != CASHERA_API_KEY:
         return False
 
-    # Если Secret существует — проверяем его.
-    # Если CasheRa у аккаунта его не выдает,
-    # webhook всё равно может пройти по API Key.
     if CASHERA_API_SECRET:
         received_secret = request.headers.get(
             "X-Secret",
@@ -670,26 +612,17 @@ def verify_cashera_webhook():
 
 
 # ============================================================
-# INDEX
+# LOGIN / REGISTRATION PAGE
 # ============================================================
 
-@app.route("/")
-def index():
-    if session.get("user_id"):
-        return redirect("/cabinet")
+def auth_page(error=None):
+    error_html = ""
 
-    widget = ""
-
-    if TELEGRAM_BOT_USERNAME:
-        widget = f"""
-        <script async
-          src="https://telegram.org/js/telegram-widget.js?22"
-          data-telegram-login="{html.escape(TELEGRAM_BOT_USERNAME)}"
-          data-size="large"
-          data-userpic="false"
-          data-request-access="write"
-          data-onauth="onTelegramAuth(user)">
-        </script>
+    if error:
+        error_html = f"""
+        <div class="error">
+            {html.escape(str(error))}
+        </div>
         """
 
     page = f"""
@@ -700,6 +633,7 @@ def index():
 <meta name="viewport"
       content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#07030d">
+
 <title>ixxy VPN</title>
 
 <style>
@@ -755,10 +689,64 @@ p {{
     line-height: 1.5;
 }}
 
-.login {{
-    margin-top: 28px;
-    display: flex;
-    justify-content: center;
+form {{
+    margin-top: 25px;
+}}
+
+input {{
+    width: 100%;
+    height: 55px;
+    padding: 0 17px;
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,.09);
+    outline: none;
+    background: rgba(255,255,255,.045);
+    color: white;
+    font-size: 15px;
+}}
+
+input::placeholder {{
+    color: #756c80;
+}}
+
+.buttons {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+    margin-top: 10px;
+}}
+
+button {{
+    height: 53px;
+    border: 0;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 850;
+    cursor: pointer;
+}}
+
+.primary {{
+    background: linear-gradient(
+        135deg,
+        #9b5cff,
+        #6d2cff
+    );
+    color: white;
+}}
+
+.secondary {{
+    background: rgba(255,255,255,.06);
+    color: white;
+    border: 1px solid rgba(255,255,255,.08);
+}}
+
+.error {{
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(255,70,90,.1);
+    color: #ff9aa6;
+    font-size: 13px;
 }}
 
 .note {{
@@ -770,6 +758,7 @@ p {{
 </head>
 
 <body>
+
 <div class="card">
 
 <div class="logo">☂️</div>
@@ -777,42 +766,47 @@ p {{
 <h1>ixxy VPN</h1>
 
 <p>
-Личный кабинет подписки.<br>
-Управляйте VPN без лишних настроек.
+Введите Telegram ID или username,
+чтобы открыть личный кабинет.
 </p>
 
-<div class="login">
-{widget}
+<form method="post">
+
+<input
+    type="text"
+    name="login"
+    autocomplete="off"
+    placeholder="Telegram ID или @username"
+    required
+>
+
+<div class="buttons">
+
+<button
+    class="primary"
+    type="submit"
+    formaction="/login">
+    Войти
+</button>
+
+<button
+    class="secondary"
+    type="submit"
+    formaction="/register">
+    Регистрация
+</button>
+
 </div>
+
+</form>
+
+{error_html}
 
 <div class="note">
-Вход выполняется через Telegram.
+Например: 123456789 или @username
 </div>
 
 </div>
-
-<script>
-function onTelegramAuth(user) {{
-    fetch("/auth/telegram", {{
-        method: "POST",
-        headers: {{
-            "Content-Type": "application/json"
-        }},
-        body: JSON.stringify(user)
-    }})
-    .then(r => r.json())
-    .then(data => {{
-        if (data.ok) {{
-            window.location.href = "/cabinet";
-        }} else {{
-            alert(data.error || "Ошибка входа");
-        }}
-    }})
-    .catch(() => {{
-        alert("Ошибка соединения");
-    }});
-}}
-</script>
 
 </body>
 </html>
@@ -827,45 +821,113 @@ function onTelegramAuth(user) {{
 
 
 # ============================================================
-# TELEGRAM AUTH
+# INDEX
 # ============================================================
 
-@app.post("/auth/telegram")
-def telegram_auth():
-    data = request.get_json(
-        silent=True
-    ) or {}
+@app.route("/")
+def index():
+    if session.get("user_id"):
+        return redirect("/cabinet")
 
-    if not verify_telegram_auth(data):
-        return {
-            "ok": False,
-            "error": "Telegram авторизация недействительна",
-        }, 403
+    return auth_page()
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+@app.post("/login")
+def login():
+    login_value = request.form.get(
+        "login",
+        "",
+    ).strip()
+
+    if not login_value:
+        return auth_page(
+            "Введите Telegram ID или username."
+        )
 
     try:
-        user_id = int(data["id"])
+        user = get_user_by_login(
+            login_value
+        )
     except Exception:
-        return {
-            "ok": False,
-            "error": "Некорректный Telegram ID",
-        }, 400
-
-    user = get_user(user_id)
+        user = None
 
     if not user:
-        return {
-            "ok": False,
-            "error": (
-                "Пользователь не найден "
-                "в базе ixxy VPN"
-            ),
-        }, 404
+        return auth_page(
+            "Пользователь не найден. "
+            "Если вы хотите создать аккаунт, "
+            "нажмите «Регистрация»."
+        )
 
+    try:
+        user_id = int(
+            user["user_id"]
+            if isinstance(user, dict)
+            else user[0]
+        )
+    except Exception:
+        return auth_page(
+            "Не удалось определить Telegram ID."
+        )
+
+    session.clear()
     session["user_id"] = user_id
 
-    return {
-        "ok": True
-    }
+    return redirect("/cabinet")
+
+
+# ============================================================
+# REGISTRATION
+# ============================================================
+
+@app.post("/register")
+def register():
+    login_value = request.form.get(
+        "login",
+        "",
+    ).strip()
+
+    if not login_value:
+        return auth_page(
+            "Введите Telegram ID или username."
+        )
+
+    try:
+        user = register_user(
+            login_value
+        )
+    except ValueError as e:
+        return auth_page(
+            str(e)
+        )
+    except Exception as e:
+        return auth_page(
+            f"Ошибка регистрации: {e}"
+        )
+
+    if not user:
+        return auth_page(
+            "Не удалось создать пользователя."
+        )
+
+    try:
+        user_id = int(
+            user["user_id"]
+            if isinstance(user, dict)
+            else user[0]
+        )
+    except Exception:
+        return auth_page(
+            "Не удалось определить Telegram ID."
+        )
+
+    session.clear()
+    session["user_id"] = user_id
+
+    return redirect("/cabinet")
 
 
 # ============================================================
@@ -963,9 +1025,7 @@ def cabinet():
            href="/buy/{tariff_days}">
             <div>
                 <b>{tariff_days} дней</b>
-                <span>
-                    {price} ₽
-                </span>
+                <span>{price} ₽</span>
             </div>
             <strong>›</strong>
         </a>
@@ -1231,6 +1291,7 @@ body {{
 <div class="container">
 
 <header class="header">
+
     <div class="brand">
         <span class="logo">☂️</span>
         ixxy VPN
@@ -1239,9 +1300,11 @@ body {{
     <a class="logout" href="/logout">
         Выйти
     </a>
+
 </header>
 
 <section class="hero">
+
     <div class="small">
         Личный кабинет
     </div>
@@ -1254,11 +1317,13 @@ body {{
     <p>
         Управление вашей подпиской
     </p>
+
 </section>
 
 <section class="card">
 
     <div class="status">
+
         <span>
             Состояние подписки
         </span>
@@ -1266,6 +1331,7 @@ body {{
         <span class="badge {status_class}">
             {status}
         </span>
+
     </div>
 
     <div class="big">
@@ -1275,6 +1341,7 @@ body {{
     <div class="grid">
 
         <div class="stat">
+
             <div class="label">
                 Тариф
             </div>
@@ -1282,9 +1349,11 @@ body {{
             <div class="value">
                 {safe_text(subscription, "ixxy VPN")}
             </div>
+
         </div>
 
         <div class="stat">
+
             <div class="label">
                 Действует до
             </div>
@@ -1292,6 +1361,7 @@ body {{
             <div class="value">
                 {format_date(subscription_until)}
             </div>
+
         </div>
 
     </div>
@@ -1681,6 +1751,7 @@ def admin():
 <meta name="viewport"
       content="width=device-width,initial-scale=1">
 <title>ixxy VPN — Admin</title>
+
 <style>
 body {{
     margin: 0;
@@ -1716,6 +1787,7 @@ h1 {{
 }}
 </style>
 </head>
+
 <body>
 
 <main>
@@ -1723,6 +1795,7 @@ h1 {{
 <h1>☂️ ixxy VPN</h1>
 
 <div class="card">
+
     <div class="muted">
         Статистика пользователей
     </div>
@@ -1730,6 +1803,7 @@ h1 {{
     <div class="stat">
         {html.escape(str(stats))}
     </div>
+
 </div>
 
 <div class="card">
