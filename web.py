@@ -2,7 +2,8 @@ import os
 import html
 import json
 import secrets
-from datetime import datetime, timezone
+import base64
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import requests
@@ -15,20 +16,7 @@ from flask import (
     session,
 )
 
-from database import (
-    get_user,
-    get_user_by_login,
-    register_user,
-    get_subscription_content,
-    get_subscription_link,
-    extend_subscription,
-    create_payment,
-    get_payment_by_external_id,
-    mark_payment_paid,
-    payment_processed,
-    mark_payment_processed,
-    get_stats,
-)
+import database as db
 
 try:
     from dotenv import load_dotenv
@@ -226,7 +214,10 @@ def days_left(value):
     if seconds <= 0:
         return 0
 
-    return max(1, int(seconds / 86400))
+    return max(
+        1,
+        int(seconds / 86400),
+    )
 
 
 def format_date(value):
@@ -236,6 +227,17 @@ def format_date(value):
         return "—"
 
     return dt.strftime("%d.%m.%Y")
+
+
+def format_datetime(value):
+    dt = parse_datetime(value)
+
+    if not dt:
+        return "—"
+
+    return dt.strftime(
+        "%d.%m.%Y %H:%M"
+    )
 
 
 def safe_text(value, default="—"):
@@ -258,6 +260,295 @@ def no_cache(response):
     response.headers["Expires"] = "0"
 
     return response
+
+
+def user_field(
+    user,
+    index,
+    key,
+    default="",
+):
+    if user is None:
+        return default
+
+    if isinstance(user, dict):
+        return user.get(
+            key,
+            default,
+        )
+
+    try:
+        return user[index]
+    except Exception:
+        return default
+
+
+def payment_field(
+    payment,
+    index,
+    key,
+    default="",
+):
+    if payment is None:
+        return default
+
+    if isinstance(payment, dict):
+        return payment.get(
+            key,
+            default,
+        )
+
+    try:
+        return payment[index]
+    except Exception:
+        return default
+
+
+# ============================================================
+# ADMIN HELPERS
+# ============================================================
+
+def is_admin():
+    user_id = session.get("user_id")
+
+    if not user_id:
+        return False
+
+    try:
+        return int(user_id) in ADMIN_IDS
+    except Exception:
+        return False
+
+
+def require_admin():
+    if not is_admin():
+        return Response(
+            "Forbidden",
+            status=403,
+            mimetype="text/plain",
+        )
+
+    return None
+
+
+def get_admin_user_id(user):
+    try:
+        return int(
+            user_field(
+                user,
+                0,
+                "user_id",
+            )
+        )
+    except Exception:
+        return None
+
+
+def get_user_subscription_status(user):
+    if not user:
+        return (
+            "Неизвестно",
+            "inactive",
+            0,
+        )
+
+    subscription_until = user_field(
+        user,
+        4,
+        "subscription_until",
+        None,
+    )
+
+    if subscription_active(
+        subscription_until
+    ):
+        subscription = str(
+            user_field(
+                user,
+                3,
+                "subscription",
+                "",
+            ) or ""
+        ).lower()
+
+        if subscription == "trial":
+            return (
+                "🎁 Trial",
+                "trial",
+                days_left(
+                    subscription_until
+                ),
+            )
+
+        if subscription in (
+            "vip",
+            "ixxy",
+        ):
+            return (
+                "🟢 Активна",
+                "active",
+                days_left(
+                    subscription_until
+                ),
+            )
+
+        return (
+            "🟢 Активна",
+            "active",
+            days_left(
+                subscription_until
+            ),
+        )
+
+    subscription = str(
+        user_field(
+            user,
+            3,
+            "subscription",
+            "",
+        ) or ""
+    ).lower()
+
+    if subscription == "trial":
+        return (
+            "🔴 Trial истёк",
+            "expired",
+            0,
+        )
+
+    if subscription:
+        return (
+            "🔴 Истекла",
+            "expired",
+            0,
+        )
+
+    return (
+        "⚪ Нет подписки",
+        "none",
+        0,
+    )
+
+
+def user_name(user):
+    first_name = user_field(
+        user,
+        2,
+        "first_name",
+        "",
+    )
+
+    username = user_field(
+        user,
+        1,
+        "username",
+        "",
+    )
+
+    if first_name:
+        return str(first_name)
+
+    if username:
+        return "@" + str(username).lstrip("@")
+
+    return "Пользователь"
+
+
+def admin_user_url(user_id):
+    return (
+        f"/admin/user/{int(user_id)}"
+    )
+
+
+def get_admin_users():
+    func = getattr(
+        db,
+        "get_all_users",
+        None,
+    )
+
+    if not func:
+        return []
+
+    try:
+        result = func()
+
+        if result is None:
+            return []
+
+        return list(result)
+
+    except Exception:
+        return []
+
+
+def get_admin_payments():
+    func = getattr(
+        db,
+        "get_payments",
+        None,
+    )
+
+    if not func:
+        return []
+
+    try:
+        result = func()
+
+        if result is None:
+            return []
+
+        return list(result)
+
+    except Exception:
+        return []
+
+
+def get_admin_user_payments(user_id):
+    func = getattr(
+        db,
+        "get_user_payments",
+        None,
+    )
+
+    if not func:
+        return []
+
+    try:
+        result = func(
+            int(user_id)
+        )
+
+        if result is None:
+            return []
+
+        return list(result)
+
+    except Exception:
+        return []
+
+
+def call_database_function(
+    name,
+    *args,
+    **kwargs,
+):
+    func = getattr(
+        db,
+        name,
+        None,
+    )
+
+    if not func:
+        raise RuntimeError(
+            f"Функция database.{name} "
+            f"не найдена"
+        )
+
+    return func(
+        *args,
+        **kwargs,
+    )
 
 
 # ============================================================
@@ -310,7 +601,10 @@ def github_get_file(user_id):
     return response.json()
 
 
-def github_save_user(user_id, content):
+def github_save_user(
+    user_id,
+    content,
+):
     if not GITHUB_TOKEN:
         raise RuntimeError(
             "GITHUB_TOKEN не задан"
@@ -326,9 +620,9 @@ def github_save_user(user_id, content):
         f"{path}"
     )
 
-    old_file = github_get_file(user_id)
-
-    import base64
+    old_file = github_get_file(
+        user_id
+    )
 
     encoded = base64.b64encode(
         content.encode("utf-8")
@@ -407,7 +701,11 @@ def active_subscription_content(
     )
 
     if servers:
-        content += "\n" + servers + "\n"
+        content += (
+            "\n"
+            + servers
+            + "\n"
+        )
 
     return content
 
@@ -430,17 +728,23 @@ def inactive_subscription_content():
 
 
 def build_current_content(user_id):
-    user = get_user(user_id)
+    user = db.get_user(
+        user_id
+    )
 
     if not user:
         return None
 
-    try:
-        subscription_until = user[4]
-    except Exception:
-        subscription_until = None
+    subscription_until = user_field(
+        user,
+        4,
+        "subscription_until",
+        None,
+    )
 
-    if subscription_active(subscription_until):
+    if subscription_active(
+        subscription_until
+    ):
         return active_subscription_content(
             user_id,
             subscription_until,
@@ -454,7 +758,9 @@ def build_current_content(user_id):
 # ============================================================
 
 def sync_subscription(user_id):
-    content = build_current_content(user_id)
+    content = build_current_content(
+        user_id
+    )
 
     if content is None:
         return False
@@ -465,7 +771,7 @@ def sync_subscription(user_id):
             content,
         )
     except Exception:
-        pass
+        return False
 
     return True
 
@@ -486,7 +792,9 @@ def cashera_create_payment(
     )
 
     payload = {
-        "amount": int(amount * 100),
+        "amount": int(
+            amount * 100
+        ),
         "currency": "RUB",
         "external_id": external_id,
         "description": (
@@ -497,7 +805,8 @@ def cashera_create_payment(
             "days": str(days),
         },
         "callback_url": (
-            f"{PUBLIC_SITE_URL}/cashera/webhook"
+            f"{PUBLIC_SITE_URL}"
+            f"/cashera/webhook"
         ),
         "success_url": (
             f"{PUBLIC_SITE_URL}/cabinet"
@@ -514,7 +823,8 @@ def cashera_create_payment(
     }
 
     response = requests.post(
-        f"{CASHERA_URL}/integration/transactions",
+        f"{CASHERA_URL}"
+        f"/integration/transactions",
         headers=headers,
         json=payload,
         timeout=30,
@@ -547,11 +857,17 @@ def cashera_create_payment(
             f"{message}"
         )
 
-    return external_id, result
+    return (
+        external_id,
+        result,
+    )
 
 
 def extract_payment_url(data):
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
     possible_keys = [
@@ -574,7 +890,10 @@ def extract_payment_url(data):
         "transaction"
     )
 
-    if isinstance(transaction, dict):
+    if isinstance(
+        transaction,
+        dict,
+    ):
         for key in possible_keys:
             value = transaction.get(key)
 
@@ -612,7 +931,7 @@ def verify_cashera_webhook():
 
 
 # ============================================================
-# LOGIN / REGISTRATION PAGE
+# AUTH PAGE
 # ============================================================
 
 def auth_page(error=None):
@@ -647,7 +966,7 @@ body {{
     background:
         radial-gradient(
             circle at 50% -10%,
-            rgba(145, 70, 255, .28),
+            rgba(145,70,255,.28),
             transparent 38%
         ),
         #07030d;
@@ -663,15 +982,15 @@ body {{
 }}
 
 .card {{
-    width: min(92%, 470px);
+    width: min(92%,470px);
     padding: 38px 25px;
     border-radius: 30px;
     text-align: center;
-    background: rgba(20, 10, 32, .78);
-    border: 1px solid rgba(180, 100, 255, .18);
+    background: rgba(20,10,32,.78);
+    border: 1px solid rgba(180,100,255,.18);
     box-shadow:
-        0 30px 100px rgba(0, 0, 0, .55),
-        0 0 70px rgba(125, 50, 255, .12);
+        0 30px 100px rgba(0,0,0,.55),
+        0 0 70px rgba(125,50,255,.12);
 }}
 
 .logo {{
@@ -726,11 +1045,12 @@ button {{
 }}
 
 .primary {{
-    background: linear-gradient(
-        135deg,
-        #9b5cff,
-        #6d2cff
-    );
+    background:
+        linear-gradient(
+            135deg,
+            #9b5cff,
+            #6d2cff
+        );
     color: white;
 }}
 
@@ -827,7 +1147,9 @@ button {{
 @app.route("/")
 def index():
     if session.get("user_id"):
-        return redirect("/cabinet")
+        return redirect(
+            "/cabinet"
+        )
 
     return auth_page()
 
@@ -849,7 +1171,7 @@ def login():
         )
 
     try:
-        user = get_user_by_login(
+        user = db.get_user_by_login(
             login_value
         )
     except Exception:
@@ -864,9 +1186,11 @@ def login():
 
     try:
         user_id = int(
-            user["user_id"]
-            if isinstance(user, dict)
-            else user[0]
+            user_field(
+                user,
+                0,
+                "user_id",
+            )
         )
     except Exception:
         return auth_page(
@@ -876,7 +1200,9 @@ def login():
     session.clear()
     session["user_id"] = user_id
 
-    return redirect("/cabinet")
+    return redirect(
+        "/cabinet"
+    )
 
 
 # ============================================================
@@ -896,7 +1222,7 @@ def register():
         )
 
     try:
-        user = register_user(
+        user = db.register_user(
             login_value
         )
     except ValueError as e:
@@ -915,9 +1241,11 @@ def register():
 
     try:
         user_id = int(
-            user["user_id"]
-            if isinstance(user, dict)
-            else user[0]
+            user_field(
+                user,
+                0,
+                "user_id",
+            )
         )
     except Exception:
         return auth_page(
@@ -927,7 +1255,9 @@ def register():
     session.clear()
     session["user_id"] = user_id
 
-    return redirect("/cabinet")
+    return redirect(
+        "/cabinet"
+    )
 
 
 # ============================================================
@@ -946,39 +1276,47 @@ def logout():
 
 @app.route("/cabinet")
 def cabinet():
-    user_id = session.get("user_id")
+    user_id = session.get(
+        "user_id"
+    )
 
     if not user_id:
         return redirect("/")
 
-    user = get_user(user_id)
+    user = db.get_user(
+        user_id
+    )
 
     if not user:
         session.clear()
         return redirect("/")
 
-    username = (
-        user[1]
-        if len(user) > 1
-        else ""
+    username = user_field(
+        user,
+        1,
+        "username",
+        "",
     )
 
-    first_name = (
-        user[2]
-        if len(user) > 2
-        else ""
+    first_name = user_field(
+        user,
+        2,
+        "first_name",
+        "",
     )
 
-    subscription = (
-        user[3]
-        if len(user) > 3
-        else ""
+    subscription = user_field(
+        user,
+        3,
+        "subscription",
+        "",
     )
 
-    subscription_until = (
-        user[4]
-        if len(user) > 4
-        else None
+    subscription_until = user_field(
+        user,
+        4,
+        "subscription_until",
+        None,
     )
 
     active = subscription_active(
@@ -989,14 +1327,21 @@ def cabinet():
         subscription_until
     )
 
-    token = make_token(user_id)
+    token = make_token(
+        user_id
+    )
 
     subscription_url = build_subscription_url(
         token
     )
 
-    happ_url = build_happ_url(token)
-    incy_url = build_incy_url(token)
+    happ_url = build_happ_url(
+        token
+    )
+
+    incy_url = build_incy_url(
+        token
+    )
 
     status = (
         "Активна"
@@ -1054,7 +1399,7 @@ body {{
     background:
         radial-gradient(
             circle at 50% -10%,
-            rgba(145, 70, 255, .25),
+            rgba(145,70,255,.25),
             transparent 35%
         ),
         #07030d;
@@ -1126,8 +1471,8 @@ body {{
     margin-top: 13px;
     padding: 20px;
     border-radius: 25px;
-    background: rgba(20, 10, 32, .72);
-    border: 1px solid rgba(180, 100, 255, .13);
+    background: rgba(20,10,32,.72);
+    border: 1px solid rgba(180,100,255,.13);
     box-shadow: 0 20px 65px rgba(0,0,0,.28);
 }}
 
@@ -1145,12 +1490,12 @@ body {{
 }}
 
 .active {{
-    background: rgba(90, 255, 160, .1);
+    background: rgba(90,255,160,.1);
     color: #91ffbd;
 }}
 
 .inactive {{
-    background: rgba(255, 80, 100, .1);
+    background: rgba(255,80,100,.1);
     color: #ff8997;
 }}
 
@@ -1196,15 +1541,13 @@ body {{
 }}
 
 .primary {{
-    background: linear-gradient(
-        135deg,
-        #9b5cff,
-        #6d2cff
-    );
+    background:
+        linear-gradient(
+            135deg,
+            #9b5cff,
+            #6d2cff
+        );
     color: white;
-    box-shadow:
-        0 15px 40px
-        rgba(120,50,255,.22);
 }}
 
 .secondary {{
@@ -1271,11 +1614,6 @@ body {{
     color: #9671c7;
 }}
 
-.support {{
-    color: #9c7bca;
-    text-decoration: none;
-}}
-
 .footer {{
     text-align: center;
     color: #57505f;
@@ -1340,27 +1678,28 @@ body {{
     <div class="grid">
 
         <div class="stat">
-
             <div class="label">
                 Тариф
             </div>
 
             <div class="value">
-                {safe_text(subscription, "ixxy VPN")}
+                {safe_text(
+                    subscription,
+                    "ixxy VPN"
+                )}
             </div>
-
         </div>
 
         <div class="stat">
-
             <div class="label">
                 Действует до
             </div>
 
             <div class="value">
-                {format_date(subscription_until)}
+                {format_date(
+                    subscription_until
+                )}
             </div>
-
         </div>
 
     </div>
@@ -1396,7 +1735,10 @@ body {{
         <input
             id="sub"
             readonly
-            value="{html.escape(subscription_url, quote=True)}"
+            value="{html.escape(
+                subscription_url,
+                quote=True
+            )}"
         >
 
         <button
@@ -1427,7 +1769,10 @@ body {{
 
     <a
         class="button primary"
-        href="{html.escape(TELEGRAM_URL, quote=True)}">
+        href="{html.escape(
+            TELEGRAM_URL,
+            quote=True
+        )}">
         Поддержка Telegram
     </a>
 
@@ -1475,7 +1820,9 @@ function copySub() {{
 
 @app.route("/buy/<int:days>")
 def buy(days):
-    user_id = session.get("user_id")
+    user_id = session.get(
+        "user_id"
+    )
 
     if not user_id:
         return redirect("/")
@@ -1501,7 +1848,7 @@ def buy(days):
             )
         )
 
-        create_payment(
+        db.create_payment(
             user_id=user_id,
             amount=amount,
             days=days,
@@ -1530,7 +1877,9 @@ def buy(days):
                 mimetype="application/json",
             )
 
-        return redirect(payment_url)
+        return redirect(
+            payment_url
+        )
 
     except Exception as e:
         return Response(
@@ -1571,7 +1920,7 @@ def cashera_webhook():
     status = str(
         transaction.get(
             "status",
-            ""
+            "",
         )
     ).lower()
 
@@ -1585,7 +1934,9 @@ def cashera_webhook():
         transaction.get(
             "external_id"
         )
-        or data.get("external_id")
+        or data.get(
+            "external_id"
+        )
     )
 
     if not external_id:
@@ -1594,7 +1945,7 @@ def cashera_webhook():
             "error": "external_id missing",
         }, 400
 
-    if payment_processed(
+    if db.payment_processed(
         external_id
     ):
         return {
@@ -1602,7 +1953,7 @@ def cashera_webhook():
             "duplicate": True,
         }
 
-    payment = get_payment_by_external_id(
+    payment = db.get_payment_by_external_id(
         external_id
     )
 
@@ -1613,20 +1964,22 @@ def cashera_webhook():
         }, 404
 
     try:
-        if isinstance(payment, dict):
-            user_id = int(
-                payment["user_id"]
+        user_id = int(
+            payment_field(
+                payment,
+                1,
+                "user_id",
             )
-            days = int(
-                payment["days"]
+        )
+
+        days = int(
+            payment_field(
+                payment,
+                3,
+                "days",
             )
-        else:
-            user_id = int(
-                payment[1]
-            )
-            days = int(
-                payment[3]
-            )
+        )
+
     except Exception:
         return {
             "ok": False,
@@ -1634,16 +1987,16 @@ def cashera_webhook():
         }, 500
 
     try:
-        extend_subscription(
+        db.extend_subscription(
             user_id,
             days,
         )
 
-        mark_payment_paid(
+        db.mark_payment_paid(
             external_id
         )
 
-        mark_payment_processed(
+        db.mark_payment_processed(
             external_id
         )
 
@@ -1663,18 +2016,20 @@ def cashera_webhook():
 
 
 # ============================================================
-# SUBSCRIPTION URL
+# SUBSCRIPTION
 # ============================================================
 
 @app.route("/sub/<token>")
 def subscription(token):
-    user_id = parse_token(token)
+    user_id = parse_token(
+        token
+    )
 
     if user_id is None:
         abort(404)
 
     try:
-        content = get_subscription_content(
+        content = db.get_subscription_content(
             user_id
         )
     except Exception:
@@ -1694,7 +2049,8 @@ def subscription(token):
     )
 
     response.headers["Cache-Control"] = (
-        "no-store, no-cache, must-revalidate, max-age=0"
+        "no-store, no-cache, "
+        "must-revalidate, max-age=0"
     )
 
     return response
@@ -1706,7 +2062,9 @@ def subscription(token):
 
 @app.route("/s/<token>")
 def subscription_page(token):
-    user_id = parse_token(token)
+    user_id = parse_token(
+        token
+    )
 
     if user_id is None:
         abort(404)
@@ -1717,97 +2075,342 @@ def subscription_page(token):
 
 
 # ============================================================
-# ADMIN
+# ADMIN CSS
 # ============================================================
 
-def is_admin():
-    # Админ-панель доступна всем
-    # авторизованным пользователям.
-    return True
+ADMIN_CSS = """
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+        radial-gradient(
+            circle at 50% -10%,
+            rgba(145,70,255,.25),
+            transparent 35%
+        ),
+        #07030d;
+    color: #fff;
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Display",
+        Arial,
+        sans-serif;
+}
+
+a {
+    color: inherit;
+}
+
+.container {
+    width: min(
+        calc(100% - 26px),
+        900px
+    );
+    margin: auto;
+    padding:
+        20px 0 50px;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.brand {
+    font-size: 22px;
+    font-weight: 900;
+}
+
+.nav {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+}
+
+.nav a {
+    padding: 9px 12px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.05);
+    text-decoration: none;
+    color: #b6adbf;
+    font-size: 12px;
+}
+
+.card {
+    padding: 18px;
+    margin-bottom: 12px;
+    border-radius: 22px;
+    background: rgba(20,10,32,.78);
+    border: 1px solid rgba(180,100,255,.13);
+    box-shadow: 0 18px 60px rgba(0,0,0,.2);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit,minmax(150px,1fr));
+    gap: 9px;
+}
+
+.stat {
+    padding: 15px;
+    border-radius: 17px;
+    background: rgba(255,255,255,.035);
+}
+
+.stat .num {
+    font-size: 26px;
+    font-weight: 900;
+    margin-top: 6px;
+}
+
+.muted {
+    color: #82788d;
+}
+
+.small {
+    font-size: 12px;
+}
+
+.search {
+    display: flex;
+    gap: 8px;
+}
+
+input,
+select {
+    width: 100%;
+    height: 48px;
+    padding: 0 13px;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,.09);
+    outline: none;
+    background: rgba(255,255,255,.045);
+    color: white;
+}
+
+button,
+.button {
+    min-height: 46px;
+    padding: 0 15px;
+    border: 0;
+    border-radius: 14px;
+    background:
+        linear-gradient(
+            135deg,
+            #9b5cff,
+            #6d2cff
+        );
+    color: white;
+    font-weight: 850;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.button.secondary {
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.08);
+}
+
+.button.danger {
+    background: rgba(255,65,85,.13);
+    color: #ff9aa6;
+}
+
+.user {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px;
+    margin-top: 8px;
+    border-radius: 16px;
+    background: rgba(255,255,255,.035);
+    text-decoration: none;
+}
+
+.user:hover {
+    background: rgba(255,255,255,.065);
+}
+
+.user-main {
+    min-width: 0;
+}
+
+.user-name {
+    font-weight: 850;
+}
+
+.user-id {
+    margin-top: 4px;
+    color: #766d7e;
+    font-size: 11px;
+}
+
+.badge {
+    white-space: nowrap;
+    padding: 7px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.badge.active {
+    color: #91ffbd;
+    background: rgba(90,255,160,.1);
+}
+
+.badge.trial {
+    color: #d9a5ff;
+    background: rgba(160,80,255,.12);
+}
+
+.badge.expired {
+    color: #ff8997;
+    background: rgba(255,80,100,.1);
+}
+
+.badge.none {
+    color: #aaa1ae;
+    background: rgba(255,255,255,.05);
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.actions form {
+    margin: 0;
+}
+
+.pagination {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 16px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+td,
+th {
+    padding: 10px 6px;
+    border-bottom:
+        1px solid rgba(255,255,255,.06);
+    text-align: left;
+    font-size: 12px;
+}
+
+th {
+    color: #7d7386;
+}
+
+.notice {
+    padding: 13px;
+    margin-bottom: 12px;
+    border-radius: 14px;
+    background: rgba(90,255,160,.08);
+    color: #9dffc1;
+}
+
+.error {
+    padding: 13px;
+    margin-bottom: 12px;
+    border-radius: 14px;
+    background: rgba(255,70,90,.1);
+    color: #ff9aa6;
+}
+
+@media(max-width:600px) {
+    .search {
+        flex-direction: column;
+    }
+
+    table {
+        font-size: 11px;
+    }
+
+    td,
+    th {
+        padding: 8px 4px;
+    }
+}
+</style>
+"""
 
 
-@app.route("/admin")
-def admin():
-    if not is_admin():
-        return Response(
-            "Forbidden",
-            status=403,
-        )
-
-    try:
-        stats = get_stats()
-    except Exception:
-        stats = {}
-
+def admin_page(
+    title,
+    body,
+):
     page = f"""
 <!doctype html>
 <html lang="ru">
+
 <head>
 <meta charset="utf-8">
 <meta name="viewport"
       content="width=device-width,initial-scale=1">
-<title>ixxy VPN — Admin</title>
 
-<style>
-body {{
-    margin: 0;
-    background: #08050d;
-    color: white;
-    font-family: Arial, sans-serif;
-}}
+<title>
+ixxy VPN — {html.escape(title)}
+</title>
 
-main {{
-    width: min(92%, 700px);
-    margin: 30px auto;
-}}
+{ADMIN_CSS}
 
-.card {{
-    padding: 20px;
-    margin-bottom: 12px;
-    border-radius: 20px;
-    background: #17111f;
-    border: 1px solid #2a1d38;
-}}
-
-h1 {{
-    margin-top: 0;
-}}
-
-.stat {{
-    font-size: 30px;
-    font-weight: 900;
-}}
-
-.muted {{
-    color: #918799;
-}}
-</style>
 </head>
 
 <body>
 
-<main>
+<div class="container">
 
-<h1>☂️ ixxy VPN</h1>
+<div class="header">
 
-<div class="card">
-
-    <div class="muted">
-        Статистика пользователей
+    <div class="brand">
+        ☂️ ixxy VPN
     </div>
 
-    <div class="stat">
-        {html.escape(str(stats))}
+    <div class="nav">
+        <a href="/admin">
+            📊 Статистика
+        </a>
+
+        <a href="/admin/users">
+            👥 Пользователи
+        </a>
+
+        <a href="/cabinet">
+            Кабинет
+        </a>
+
+        <a href="/logout">
+            Выйти
+        </a>
     </div>
 
 </div>
 
-<div class="card">
-    Админ-панель сайта работает отдельно
-    от Telegram-бота.
-</div>
+{body}
 
-</main>
+</div>
 
 </body>
 </html>
@@ -1822,6 +2425,1366 @@ h1 {{
 
 
 # ============================================================
+# ADMIN DASHBOARD / STATS
+# ============================================================
+
+@app.route("/admin")
+def admin():
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    users = get_admin_users()
+    payments = get_admin_payments()
+
+    total_users = len(users)
+
+    active_users = 0
+    trial_users = 0
+    expired_users = 0
+    none_users = 0
+    vip_users = 0
+
+    now = now_utc()
+
+    registrations_today = 0
+    registrations_7 = 0
+    registrations_30 = 0
+
+    for user in users:
+        status, status_type, _days = (
+            get_user_subscription_status(
+                user
+            )
+        )
+
+        if status_type == "active":
+            active_users += 1
+
+        elif status_type == "trial":
+            trial_users += 1
+
+        elif status_type == "expired":
+            expired_users += 1
+
+        elif status_type == "none":
+            none_users += 1
+
+        subscription = str(
+            user_field(
+                user,
+                3,
+                "subscription",
+                "",
+            ) or ""
+        ).lower()
+
+        if (
+            subscription == "vip"
+            and status_type == "active"
+        ):
+            vip_users += 1
+
+        created_at = user_field(
+            user,
+            11,
+            "created_at",
+            None,
+        )
+
+        created_dt = parse_datetime(
+            created_at
+        )
+
+        if created_dt:
+            age = (
+                now - created_dt
+            ).total_seconds()
+
+            if age <= 86400:
+                registrations_today += 1
+
+            if age <= 7 * 86400:
+                registrations_7 += 1
+
+            if age <= 30 * 86400:
+                registrations_30 += 1
+
+    payment_total = len(
+        payments
+    )
+
+    payment_pending = 0
+    payment_paid = 0
+    payment_failed = 0
+    total_days = 0
+    total_income = 0
+
+    for payment in payments:
+        status = str(
+            payment_field(
+                payment,
+                5,
+                "status",
+                "",
+            ) or ""
+        ).lower()
+
+        if status in (
+            "pending",
+            "created",
+            "waiting",
+        ):
+            payment_pending += 1
+
+        elif status in (
+            "paid",
+            "success",
+            "successful",
+            "completed",
+        ):
+            payment_paid += 1
+
+        elif status in (
+            "failed",
+            "cancelled",
+            "canceled",
+        ):
+            payment_failed += 1
+
+        try:
+            total_days += int(
+                payment_field(
+                    payment,
+                    3,
+                    "days",
+                    0,
+                ) or 0
+            )
+        except Exception:
+            pass
+
+        if status in (
+            "paid",
+            "success",
+            "successful",
+            "completed",
+        ):
+            try:
+                total_income += int(
+                    payment_field(
+                        payment,
+                        2,
+                        "amount",
+                        0,
+                    ) or 0
+                )
+            except Exception:
+                pass
+
+    stats_func = getattr(
+        db,
+        "get_stats",
+        None,
+    )
+
+    db_stats = {}
+
+    if stats_func:
+        try:
+            db_stats = stats_func() or {}
+        except Exception:
+            db_stats = {}
+
+    body = f"""
+<h1>📊 Админ-панель</h1>
+
+<div class="grid">
+
+<div class="stat">
+    <div class="muted small">
+        Всего пользователей
+    </div>
+    <div class="num">
+        {total_users}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        🟢 Активные
+    </div>
+    <div class="num">
+        {active_users}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        🎁 Trial
+    </div>
+    <div class="num">
+        {trial_users}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        👑 VIP
+    </div>
+    <div class="num">
+        {vip_users}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        🔴 Истекшие
+    </div>
+    <div class="num">
+        {expired_users}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        ⚪ Без подписки
+    </div>
+    <div class="num">
+        {none_users}
+    </div>
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>👥 Регистрации</h2>
+
+<div class="grid">
+
+<div class="stat">
+    Сегодня
+    <div class="num">
+        {registrations_today}
+    </div>
+</div>
+
+<div class="stat">
+    7 дней
+    <div class="num">
+        {registrations_7}
+    </div>
+</div>
+
+<div class="stat">
+    30 дней
+    <div class="num">
+        {registrations_30}
+    </div>
+</div>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>💳 Платежи</h2>
+
+<div class="grid">
+
+<div class="stat">
+    Всего
+    <div class="num">
+        {payment_total}
+    </div>
+</div>
+
+<div class="stat">
+    Успешные
+    <div class="num">
+        {payment_paid}
+    </div>
+</div>
+
+<div class="stat">
+    Ожидают
+    <div class="num">
+        {payment_pending}
+    </div>
+</div>
+
+<div class="stat">
+    Ошибки
+    <div class="num">
+        {payment_failed}
+    </div>
+</div>
+
+<div class="stat">
+    Дней оплачено
+    <div class="num">
+        {total_days}
+    </div>
+</div>
+
+<div class="stat">
+    Доход
+    <div class="num">
+        {total_income} ₽
+    </div>
+</div>
+
+</div>
+
+</div>
+
+<div class="actions">
+
+<a class="button"
+   href="/admin/users">
+    👥 Пользователи
+</a>
+
+<a class="button secondary"
+   href="/admin/payments">
+    💳 Платежи
+</a>
+
+<a class="button secondary"
+   href="/admin/sync">
+    🔄 Синхронизировать
+</a>
+
+<a class="button secondary"
+   href="/admin">
+    🔃 Обновить
+</a>
+
+</div>
+"""
+
+    return admin_page(
+        "Статистика",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN USERS
+# ============================================================
+
+@app.route("/admin/users")
+def admin_users():
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    query = request.args.get(
+        "q",
+        "",
+    ).strip()
+
+    try:
+        page_number = max(
+            1,
+            int(
+                request.args.get(
+                    "page",
+                    "1",
+                )
+            ),
+        )
+    except Exception:
+        page_number = 1
+
+    users = get_admin_users()
+
+    if query:
+        query_lower = query.lower()
+
+        filtered = []
+
+        for user in users:
+            user_id = str(
+                user_field(
+                    user,
+                    0,
+                    "user_id",
+                    "",
+                )
+            )
+
+            username = str(
+                user_field(
+                    user,
+                    1,
+                    "username",
+                    "",
+                )
+            )
+
+            first_name = str(
+                user_field(
+                    user,
+                    2,
+                    "first_name",
+                    "",
+                )
+            )
+
+            if (
+                query_lower in user_id.lower()
+                or query_lower in username.lower()
+                or query_lower in first_name.lower()
+            ):
+                filtered.append(user)
+
+        users = filtered
+
+    per_page = 15
+
+    total_pages = max(
+        1,
+        (
+            len(users)
+            + per_page
+            - 1
+        )
+        // per_page,
+    )
+
+    if page_number > total_pages:
+        page_number = total_pages
+
+    start = (
+        page_number - 1
+    ) * per_page
+
+    current_users = users[
+        start:start + per_page
+    ]
+
+    users_html = ""
+
+    for user in current_users:
+        user_id = get_admin_user_id(
+            user
+        )
+
+        if user_id is None:
+            continue
+
+        name = user_name(
+            user
+        )
+
+        status, status_type, days = (
+            get_user_subscription_status(
+                user
+            )
+        )
+
+        if status_type == "active":
+            badge_class = "active"
+        elif status_type == "trial":
+            badge_class = "trial"
+        elif status_type == "expired":
+            badge_class = "expired"
+        else:
+            badge_class = "none"
+
+        username = user_field(
+            user,
+            1,
+            "username",
+            "",
+        )
+
+        username_text = ""
+
+        if username:
+            username_text = (
+                "@" +
+                str(username).lstrip("@")
+            )
+
+        users_html += f"""
+<a class="user"
+   href="{admin_user_url(user_id)}">
+
+    <div class="user-main">
+
+        <div class="user-name">
+            {safe_text(name)}
+        </div>
+
+        <div class="user-id">
+            ID: {user_id}
+            {" • " + safe_text(username_text)
+             if username_text else ""}
+        </div>
+
+    </div>
+
+    <span class="badge {badge_class}">
+        {html.escape(status)}
+        {f" • {days}д" if days else ""}
+    </span>
+
+</a>
+"""
+
+    search_value = html.escape(
+        query,
+        quote=True,
+    )
+
+    pagination_html = ""
+
+    if page_number > 1:
+        pagination_html += f"""
+<a class="button secondary"
+   href="/admin/users?q={quote(query)}&page={page_number-1}">
+    ← Назад
+</a>
+"""
+
+    if page_number < total_pages:
+        pagination_html += f"""
+<a class="button secondary"
+   href="/admin/users?q={quote(query)}&page={page_number+1}">
+    Далее →
+</a>
+"""
+
+    body = f"""
+<h1>👥 Пользователи</h1>
+
+<div class="card">
+
+<form class="search"
+      method="get"
+      action="/admin/users">
+
+    <input
+        name="q"
+        value="{search_value}"
+        placeholder="ID, username или имя"
+    >
+
+    <button type="submit">
+        🔎 Найти
+    </button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<div class="muted small">
+    Найдено: {len(users)}
+</div>
+
+{users_html}
+
+<div class="pagination">
+
+{pagination_html}
+
+</div>
+
+</div>
+"""
+
+    return admin_page(
+        "Пользователи",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN USER PROFILE
+# ============================================================
+
+@app.route(
+    "/admin/user/<int:user_id>"
+)
+def admin_user_profile(user_id):
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    user = db.get_user(
+        user_id
+    )
+
+    if not user:
+        return admin_page(
+            "Ошибка",
+            """
+            <div class="error">
+                Пользователь не найден.
+            </div>
+            """,
+        )
+
+    status, status_type, days = (
+        get_user_subscription_status(
+            user
+        )
+    )
+
+    subscription_until = user_field(
+        user,
+        4,
+        "subscription_until",
+        None,
+    )
+
+    username = user_field(
+        user,
+        1,
+        "username",
+        "",
+    )
+
+    first_name = user_field(
+        user,
+        2,
+        "first_name",
+        "",
+    )
+
+    subscription = user_field(
+        user,
+        3,
+        "subscription",
+        "",
+    )
+
+    token = make_token(
+        user_id
+    )
+
+    subscription_url = build_subscription_url(
+        token
+    )
+
+    payments = get_admin_user_payments(
+        user_id
+    )
+
+    payments_html = ""
+
+    for payment in payments:
+        payment_id = payment_field(
+            payment,
+            0,
+            "id",
+            "—",
+        )
+
+        amount = payment_field(
+            payment,
+            2,
+            "amount",
+            "—",
+        )
+
+        days_paid = payment_field(
+            payment,
+            3,
+            "days",
+            "—",
+        )
+
+        external_id = payment_field(
+            payment,
+            4,
+            "external_id",
+            "—",
+        )
+
+        payment_status = payment_field(
+            payment,
+            5,
+            "status",
+            "—",
+        )
+
+        created_at = payment_field(
+            payment,
+            6,
+            "created_at",
+            None,
+        )
+
+        payments_html += f"""
+<tr>
+<td>{safe_text(payment_id)}</td>
+<td>{safe_text(amount)} ₽</td>
+<td>{safe_text(days_paid)}</td>
+<td>{safe_text(payment_status)}</td>
+<td>{format_datetime(created_at)}</td>
+</tr>
+"""
+
+    if not payments_html:
+        payments_html = """
+<tr>
+<td colspan="5">
+    <span class="muted">
+        Платежей нет
+    </span>
+</td>
+</tr>
+"""
+
+    body = f"""
+<h1>👤 Пользователь</h1>
+
+<div class="card">
+
+<div class="grid">
+
+<div class="stat">
+    <div class="muted small">
+        Telegram ID
+    </div>
+    <div class="num">
+        {user_id}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        Статус
+    </div>
+    <div class="num">
+        {html.escape(status)}
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        Осталось
+    </div>
+    <div class="num">
+        {days} дн.
+    </div>
+</div>
+
+<div class="stat">
+    <div class="muted small">
+        До
+    </div>
+    <div class="num">
+        {format_date(subscription_until)}
+    </div>
+</div>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>
+    {safe_text(
+        first_name,
+        "Пользователь"
+    )}
+</h2>
+
+<p class="muted">
+Username:
+{safe_text(username)}
+</p>
+
+<p class="muted">
+Тариф:
+{safe_text(subscription)}
+</p>
+
+<div class="copybox"
+     style="
+     display:flex;
+     gap:7px;
+     padding:6px;
+     background:#09050e;
+     border-radius:15px;
+     ">
+
+<input
+    style="
+    flex:1;
+    min-width:0;
+    background:transparent;
+    border:0;
+    color:#aaa;
+    "
+    readonly
+    value="{html.escape(
+        subscription_url,
+        quote=True
+    )}"
+>
+
+</div>
+
+<div class="actions">
+
+<a class="button"
+   href="{subscription_url}">
+    🔗 Открыть подписку
+</a>
+
+<a class="button secondary"
+   href="/admin/user/{user_id}/extend">
+    ⏳ Продлить
+</a>
+
+<a class="button secondary"
+   href="/admin/user/{user_id}/disable">
+    ❌ Отключить
+</a>
+
+<a class="button secondary"
+   href="/admin/users">
+    ← Пользователи
+</a>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>💳 Платежи пользователя</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>ID</th>
+<th>Сумма</th>
+<th>Дни</th>
+<th>Статус</th>
+<th>Дата</th>
+</tr>
+</thead>
+
+<tbody>
+
+{payments_html}
+
+</tbody>
+
+</table>
+
+</div>
+"""
+
+    return admin_page(
+        f"Пользователь {user_id}",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN EXTEND
+# ============================================================
+
+@app.route(
+    "/admin/user/<int:user_id>/extend",
+    methods=["GET", "POST"],
+)
+def admin_extend(user_id):
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    user = db.get_user(
+        user_id
+    )
+
+    if not user:
+        return admin_page(
+            "Ошибка",
+            """
+            <div class="error">
+                Пользователь не найден.
+            </div>
+            """,
+        )
+
+    error = ""
+
+    if request.method == "POST":
+        raw_days = request.form.get(
+            "days",
+            "",
+        ).strip()
+
+        try:
+            days = int(
+                raw_days
+            )
+
+            if days <= 0:
+                raise ValueError
+
+            if days > 999999999:
+                raise ValueError
+
+            db.extend_subscription(
+                user_id,
+                days,
+            )
+
+            sync_subscription(
+                user_id
+            )
+
+            return redirect(
+                f"/admin/user/{user_id}"
+            )
+
+        except Exception as e:
+            error = str(e)
+
+    error_html = ""
+
+    if error:
+        error_html = f"""
+        <div class="error">
+            Ошибка: {html.escape(error)}
+        </div>
+        """
+
+    body = f"""
+<h1>⏳ Продление подписки</h1>
+
+{error_html}
+
+<div class="card">
+
+<p>
+Пользователь:
+<b>{user_id}</b>
+</p>
+
+<div class="actions">
+
+<form method="post">
+<input type="hidden"
+       name="days"
+       value="30">
+<button>
++30 дней
+</button>
+</form>
+
+<form method="post">
+<input type="hidden"
+       name="days"
+       value="90">
+<button>
++90 дней
+</button>
+</form>
+
+<form method="post">
+<input type="hidden"
+       name="days"
+       value="180">
+<button>
++180 дней
+</button>
+</form>
+
+<form method="post">
+<input type="hidden"
+       name="days"
+       value="365">
+<button>
++365 дней
+</button>
+</form>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>✏️ Свой срок</h2>
+
+<form method="post">
+
+<input
+    type="number"
+    name="days"
+    min="1"
+    max="999999999"
+    placeholder="Количество дней"
+    required
+>
+
+<div class="actions">
+
+<button type="submit">
+Продлить
+</button>
+
+<a
+    class="button secondary"
+    href="/admin/user/{user_id}">
+    Отмена
+</a>
+
+</div>
+
+</form>
+
+</div>
+"""
+
+    return admin_page(
+        "Продление",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN DISABLE
+# ============================================================
+
+@app.route(
+    "/admin/user/<int:user_id>/disable",
+    methods=["GET", "POST"],
+)
+def admin_disable(user_id):
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    user = db.get_user(
+        user_id
+    )
+
+    if not user:
+        return admin_page(
+            "Ошибка",
+            """
+            <div class="error">
+                Пользователь не найден.
+            </div>
+            """,
+        )
+
+    if request.method == "POST":
+        try:
+            disable_func = getattr(
+                db,
+                "disable_subscription",
+                None,
+            )
+
+            if not disable_func:
+                raise RuntimeError(
+                    "В database.py нет "
+                    "disable_subscription()"
+                )
+
+            disable_func(
+                user_id
+            )
+
+            sync_subscription(
+                user_id
+            )
+
+            return redirect(
+                f"/admin/user/{user_id}"
+            )
+
+        except Exception as e:
+            return admin_page(
+                "Ошибка",
+                f"""
+                <div class="error">
+                    {html.escape(str(e))}
+                </div>
+                """,
+            )
+
+    body = f"""
+<h1>❌ Отключение подписки</h1>
+
+<div class="card">
+
+<p>
+Вы действительно хотите отключить
+подписку пользователя
+<b>{user_id}</b>?
+</p>
+
+<div class="actions">
+
+<form method="post">
+<button class="button danger"
+        type="submit">
+    Да, отключить
+</button>
+</form>
+
+<a
+    class="button secondary"
+    href="/admin/user/{user_id}">
+    Отмена
+</a>
+
+</div>
+
+</div>
+"""
+
+    return admin_page(
+        "Отключение",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN PAYMENTS
+# ============================================================
+
+@app.route("/admin/payments")
+def admin_payments():
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    payments = get_admin_payments()
+
+    rows = ""
+
+    for payment in reversed(
+        payments[-100:]
+    ):
+        payment_id = payment_field(
+            payment,
+            0,
+            "id",
+            "—",
+        )
+
+        user_id = payment_field(
+            payment,
+            1,
+            "user_id",
+            "—",
+        )
+
+        amount = payment_field(
+            payment,
+            2,
+            "amount",
+            "—",
+        )
+
+        days = payment_field(
+            payment,
+            3,
+            "days",
+            "—",
+        )
+
+        external_id = payment_field(
+            payment,
+            4,
+            "external_id",
+            "",
+        )
+
+        status = payment_field(
+            payment,
+            5,
+            "status",
+            "—",
+        )
+
+        created_at = payment_field(
+            payment,
+            6,
+            "created_at",
+            None,
+        )
+
+        rows += f"""
+<tr>
+
+<td>
+{safe_text(payment_id)}
+</td>
+
+<td>
+<a href="/admin/user/{html.escape(str(user_id))}">
+{safe_text(user_id)}
+</a>
+</td>
+
+<td>
+{safe_text(amount)} ₽
+</td>
+
+<td>
+{safe_text(days)}
+</td>
+
+<td>
+{safe_text(status)}
+</td>
+
+<td>
+{format_datetime(created_at)}
+</td>
+
+</tr>
+"""
+
+    if not rows:
+        rows = """
+<tr>
+<td colspan="6">
+<span class="muted">
+Платежей пока нет.
+</span>
+</td>
+</tr>
+"""
+
+    body = f"""
+<h1>💳 Платежи</h1>
+
+<div class="card">
+
+<table>
+
+<thead>
+<tr>
+<th>ID</th>
+<th>Пользователь</th>
+<th>Сумма</th>
+<th>Дни</th>
+<th>Статус</th>
+<th>Дата</th>
+</tr>
+</thead>
+
+<tbody>
+{rows}
+</tbody>
+
+</table>
+
+</div>
+"""
+
+    return admin_page(
+        "Платежи",
+        body,
+    )
+
+
+# ============================================================
+# ADMIN SYNC
+# ============================================================
+
+@app.route("/admin/sync")
+def admin_sync():
+    denied = require_admin()
+
+    if denied:
+        return denied
+
+    users = get_admin_users()
+
+    success = 0
+    failed = 0
+
+    for user in users:
+        user_id = get_admin_user_id(
+            user
+        )
+
+        if user_id is None:
+            continue
+
+        if sync_subscription(
+            user_id
+        ):
+            success += 1
+        else:
+            failed += 1
+
+    body = f"""
+<h1>🔄 Синхронизация</h1>
+
+<div class="card">
+
+<div class="grid">
+
+<div class="stat">
+    Успешно
+    <div class="num">
+        {success}
+    </div>
+</div>
+
+<div class="stat">
+    Ошибки
+    <div class="num">
+        {failed}
+    </div>
+</div>
+
+</div>
+
+<div class="actions">
+
+<a class="button"
+   href="/admin">
+    ← Админка
+</a>
+
+<a class="button secondary"
+   href="/admin/sync">
+    🔄 Повторить
+</a>
+
+</div>
+
+</div>
+"""
+
+    return admin_page(
+        "Синхронизация",
+        body,
+    )
+
+
+# ============================================================
 # HEALTH
 # ============================================================
 
@@ -1832,7 +3795,9 @@ def health():
         mimetype="application/json",
     )
 
-    return no_cache(response)
+    return no_cache(
+        response
+    )
 
 
 # ============================================================
