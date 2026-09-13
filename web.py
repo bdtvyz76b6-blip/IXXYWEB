@@ -3,32 +3,45 @@ import html
 import hmac
 import hashlib
 import secrets
-import json
 import base64
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from datetime import datetime, timezone
 
 import requests
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from flask import (
 Flask,
 request,
 redirect,
 session,
 Response,
-abort,
 )
 
 from dotenv import load_dotenv
 
-from cashera_api import (
+from database import (
+init_db,
+get_user,
+subscription_active,
+days_left,
+format_date,
+extend_subscription,
+update_subscription_data,
 create_payment,
+get_payment_by_external_id,
+mark_payment_paid,
+payment_processed,
+mark_payment_processed,
+get_stats,
+)
+
+from cashera_api import (
+create_payment as cashera_create_payment,
 verify_webhook,
 CasheraError,
 )
 
 load_dotenv()
+
+app = Flask(name)
 
 ============================================================
 
@@ -36,15 +49,20 @@ CONFIG
 
 ============================================================
 
-app = Flask(name)
+BOT_TOKEN = os.getenv(
+“BOT_TOKEN”,
+“”,
+).strip()
 
-BOT_TOKEN = os.getenv(“BOT_TOKEN”, “”).strip()
 TELEGRAM_BOT_USERNAME = os.getenv(
 “TELEGRAM_BOT_USERNAME”,
-“”
+“”,
 ).strip().lstrip(”@”)
 
-DATABASE_URL = os.getenv(“DATABASE_URL”, “”).strip()
+DATABASE_URL = os.getenv(
+“DATABASE_URL”,
+“”,
+).strip()
 
 PUBLIC_SITE_URL = os.getenv(
 “PUBLIC_SITE_URL”,
@@ -56,7 +74,11 @@ SUBSCRIPTION_PREFIX = os.getenv(
 “2ix847xy”,
 ).strip()
 
-GITHUB_TOKEN = os.getenv(“GITHUB_TOKEN”, “”).strip()
+GITHUB_TOKEN = os.getenv(
+“GITHUB_TOKEN”,
+“”,
+).strip()
+
 GITHUB_OWNER = os.getenv(
 “GITHUB_OWNER”,
 “bdtvyz76b6-blip”,
@@ -79,10 +101,14 @@ TELEGRAM_URL = os.getenv(
 
 ADMIN_IDS = set()
 
-for value in os.getenv(“ADMIN_IDS”, “”).split(”,”):
+for value in os.getenv(
+“ADMIN_IDS”,
+“”,
+).split(”,”):
+
 value = value.strip()
 if value.isdigit():
-ADMIN_IDS.add(int(value))
+    ADMIN_IDS.add(int(value))
 
 TARIFFS = {
 30: 129,
@@ -95,205 +121,74 @@ PROFILE_TITLE = “𝗦𝗨𝗕 - 𝗜𝗫𝗫𝗬 ☂️”
 
 ============================================================
 
-FLASK SECURITY
+SECRET
 
 ============================================================
 
-SECRET_KEY = os.getenv(“WEB_SECRET_KEY”, “”).strip()
+SECRET = os.getenv(
+“WEB_SECRET_KEY”,
+“”,
+).strip()
 
-if not SECRET_KEY:
+if not SECRET:
+
 if BOT_TOKEN:
-SECRET_KEY = hashlib.sha256(
-(“ixxy-web:” + BOT_TOKEN).encode()
-).hexdigest()
+    SECRET = hashlib.sha256(
+        (
+            "ixxy-web:"
+            + BOT_TOKEN
+        ).encode()
+    ).hexdigest()
 else:
-SECRET_KEY = secrets.token_hex(32)
+    SECRET = secrets.token_hex(32)
 
-app.secret_key = SECRET_KEY
+app.secret_key = SECRET
 
-app.config[“SESSION_COOKIE_HTTPONLY”] = True
-app.config[“SESSION_COOKIE_SECURE”] = True
-app.config[“SESSION_COOKIE_SAMESITE”] = “Lax”
+app.config[
+“SESSION_COOKIE_HTTPONLY”
+] = True
 
-NO_CACHE_HEADERS = {
-“Cache-Control”: “no-store, no-cache, must-revalidate, max-age=0”,
-“Pragma”: “no-cache”,
-“Expires”: “0”,
-}
+app.config[
+“SESSION_COOKIE_SECURE”
+] = True
 
-============================================================
-
-DATABASE
+app.config[
+“SESSION_COOKIE_SAMESITE”
+] = “Lax”
 
 ============================================================
 
-def db():
-if not DATABASE_URL:
-raise RuntimeError(“DATABASE_URL не задан”)
-
-return psycopg2.connect(
-    DATABASE_URL,
-    cursor_factory=RealDictCursor,
-    connect_timeout=10,
-)
-
-def ensure_web_table():
-“””
-Создаём только техническую таблицу сайта.
-Таблицу users бота НЕ меняем.
-“””
-
-conn = db()
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_processed_payments (
-            external_id TEXT PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            days INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            processed_at TIMESTAMPTZ DEFAULT NOW()
-        )
-        """
-    )
-    conn.commit()
-finally:
-    conn.close()
+GITHUB
 
 ============================================================
-
-USERS
-
-============================================================
-
-def get_user(user_id):
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM users
-        WHERE user_id = %s
-        LIMIT 1
-        """,
-        (int(user_id),),
-    )
-    return cur.fetchone()
-finally:
-    conn.close()
-
-def get_user_columns():
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = 'users'
-        """
-    )
-    return {
-        row["column_name"]
-        for row in cur.fetchall()
-    }
-finally:
-    conn.close()
-
-def subscription_until_value(user):
-return user.get(“subscription_until”) if user else None
-
-def parse_datetime(value):
-if not value:
-return None
-
-if isinstance(value, datetime):
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
-text = str(value).strip()
-try:
-    return datetime.fromisoformat(
-        text.replace("Z", "+00:00")
-    )
-except Exception:
-    return None
-
-def is_active(user):
-if not user:
-return False
-
-until = parse_datetime(
-    subscription_until_value(user)
-)
-if not until:
-    return False
-return until > datetime.now(timezone.utc)
-
-def days_left(user):
-if not user:
-return 0
-
-until = parse_datetime(
-    subscription_until_value(user)
-)
-if not until:
-    return 0
-seconds = (
-    until - datetime.now(timezone.utc)
-).total_seconds()
-if seconds <= 0:
-    return 0
-return max(1, int(seconds / 86400))
-
-def format_date(value):
-dt = parse_datetime(value)
-
-if not dt:
-    return "—"
-return dt.strftime("%d.%m.%Y")
-
-============================================================
-
-SUBSCRIPTION
-
-============================================================
-
-def subscription_url(user_id):
-token = f”{SUBSCRIPTION_PREFIX}{int(user_id)}”
-
-return (
-    f"{PUBLIC_SITE_URL}/sub/"
-    f"{quote(token, safe='')}"
-)
-
-def github_user_path(user_id):
-return f”users/{int(user_id)}.txt”
 
 def github_headers():
-headers = {
-“Accept”: “application/vnd.github+json”,
-“X-GitHub-Api-Version”: “2022-11-28”,
+
+result = {
+    "Accept":
+        "application/vnd.github+json",
+    "X-GitHub-Api-Version":
+        "2022-11-28",
 }
-
 if GITHUB_TOKEN:
-    headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-return headers
+    result["Authorization"] = (
+        f"Bearer {GITHUB_TOKEN}"
+    )
+return result
 
-def github_get_file(path):
+def github_file(path):
+
 url = (
-f”https://api.github.com/repos/”
-f”{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}”
+    "https://api.github.com/repos/"
+    f"{GITHUB_OWNER}/"
+    f"{GITHUB_REPO}/contents/{path}"
 )
-
 response = requests.get(
     url,
     headers=github_headers(),
-    params={"ref": GITHUB_BRANCH},
+    params={
+        "ref": GITHUB_BRANCH
+    },
     timeout=20,
 )
 if response.status_code == 404:
@@ -301,23 +196,45 @@ if response.status_code == 404:
 response.raise_for_status()
 return response.json()
 
-def github_write_file(path, content, message):
-if not GITHUB_TOKEN:
-return False
+def github_text(path):
 
-existing = github_get_file(path)
+item = github_file(path)
+if not item:
+    return ""
+content = item.get(
+    "content",
+    "",
+)
+if not content:
+    return ""
+try:
+    return base64.b64decode(
+        content.replace("\n", "")
+    ).decode("utf-8")
+except Exception:
+    return ""
+
+def github_write(path, content):
+
+if not GITHUB_TOKEN:
+    return
+old = github_file(path)
 payload = {
-    "message": message,
-    "content": base64.b64encode(
-        content.encode("utf-8")
-    ).decode("ascii"),
-    "branch": GITHUB_BRANCH,
+    "message":
+        f"ixxy subscription update",
+    "content":
+        base64.b64encode(
+            content.encode("utf-8")
+        ).decode("ascii"),
+    "branch":
+        GITHUB_BRANCH,
 }
-if existing and existing.get("sha"):
-    payload["sha"] = existing["sha"]
+if old and old.get("sha"):
+    payload["sha"] = old["sha"]
 url = (
-    f"https://api.github.com/repos/"
-    f"{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
+    "https://api.github.com/repos/"
+    f"{GITHUB_OWNER}/"
+    f"{GITHUB_REPO}/contents/{path}"
 )
 response = requests.put(
     url,
@@ -326,100 +243,91 @@ response = requests.put(
     timeout=30,
 )
 response.raise_for_status()
-return True
 
-def read_github_text(path):
-item = github_get_file(path)
+============================================================
 
-if not item:
-    return ""
-encoded = item.get("content", "")
-if not encoded:
-    return ""
-try:
-    return base64.b64decode(
-        encoded.replace("\n", "")
-    ).decode("utf-8")
-except Exception:
-    return ""
+SUBSCRIPTION
 
-def active_subscription_content(user_id, until):
-servers = read_github_text(“servers.txt”).strip()
+============================================================
 
-date_text = format_date(until)
-header = (
-    f"#profile-title: {PROFILE_TITLE}\n"
+def subscription_url(user_id):
+
+return (
+    f"{PUBLIC_SITE_URL}/sub/"
+    f"{SUBSCRIPTION_PREFIX}"
+    f"{int(user_id)}"
+)
+
+def active_content(
+user_id,
+until,
+):
+
+servers = github_text(
+    "servers.txt"
+).strip()
+return (
+    f"#profile-title: "
+    f"{PROFILE_TITLE}\n"
     f"#profile-update-interval: 1\n"
     f"#subscription-userinfo: "
     f"upload=0; download=0; total=0\n"
     f"#hide-settings: true\n"
     f"#announce: "
-    f"🟢 Подписка активна • до {date_text} "
+    f"🟢 Подписка активна • "
+    f"до {format_date(until)} "
     f"• ☂️ ixxy VPN\n\n"
+    f"{servers}"
 )
-return header + servers
 
-def inactive_subscription_content():
+def inactive_content():
+
 return (
-f”#profile-title: {PROFILE_TITLE}\n”
-f”#profile-update-interval: 1\n”
-f”#subscription-userinfo: “
-f”upload=0; download=0; total=0\n”
-f”#hide-settings: true\n”
-f”#announce: “
-f”🔴 Подписка не активна • “
-f”Продлите подписку на сайте ixxy VPN\n”
+    f"#profile-title: "
+    f"{PROFILE_TITLE}\n"
+    f"#profile-update-interval: 1\n"
+    f"#subscription-userinfo: "
+    f"upload=0; download=0; total=0\n"
+    f"#hide-settings: true\n"
+    f"#announce: "
+    f"🔴 Подписка не активна • "
+    f"Продлите подписку на сайте "
+    f"ixxy VPN\n"
 )
 
-def save_subscription_everywhere(user_id):
-user = get_user(user_id)
+def sync_subscription(user_id):
 
+user = get_user(user_id)
 if not user:
     return False
-until = subscription_until_value(user)
-if is_active(user):
-    content = active_subscription_content(
+active = subscription_active(user)
+if active:
+    content = active_content(
         user_id,
-        until,
+        user.get(
+            "subscription_until"
+        ),
     )
+    status = "active"
 else:
-    content = inactive_subscription_content()
-link = subscription_url(user_id)
-columns = get_user_columns()
-conn = db()
+    content = inactive_content()
+    status = "inactive"
+link = subscription_url(
+    user_id
+)
+update_subscription_data(
+    user_id=user_id,
+    subscription=status,
+    subscription_until=user.get(
+        "subscription_until"
+    ),
+    subscription_link=link,
+    subscription_content=content,
+)
 try:
-    cur = conn.cursor()
-    updates = []
-    values = []
-    if "subscription_link" in columns:
-        updates.append("subscription_link = %s")
-        values.append(link)
-    if "subscription_content" in columns:
-        updates.append("subscription_content = %s")
-        values.append(content)
-    if "subscription" in columns:
-        updates.append("subscription = %s")
-        values.append(
-            "active" if is_active(user) else "inactive"
-        )
-    if updates:
-        values.append(int(user_id))
-        cur.execute(
-            f"""
-            UPDATE users
-            SET {", ".join(updates)}
-            WHERE user_id = %s
-            """,
-            values,
-        )
-    conn.commit()
-finally:
-    conn.close()
-try:
-    github_write_file(
-        github_user_path(user_id),
+    github_write(
+        f"users/{int(user_id)}.txt",
         content,
-        f"ixxy: update subscription {user_id}",
     )
 except Exception as e:
     print(
@@ -430,129 +338,135 @@ return True
 
 ============================================================
 
-TELEGRAM LOGIN
+TELEGRAM AUTH
 
 ============================================================
 
-def verify_telegram_login(data):
-if not BOT_TOKEN:
-return False, “BOT_TOKEN не задан”
+def verify_telegram(data):
 
+if not BOT_TOKEN:
+    return False, "BOT_TOKEN не задан"
 received_hash = str(
     data.get("hash", "")
-).strip()
-if not received_hash:
-    return False, "Нет Telegram hash"
+)
 auth_date = str(
     data.get("auth_date", "")
-).strip()
+)
+if not received_hash:
+    return False, "Telegram hash отсутствует"
 if not auth_date.isdigit():
     return False, "Неверный auth_date"
-try:
-    auth_timestamp = int(auth_date)
-except Exception:
-    return False, "Неверный auth_date"
 now = int(
-    datetime.now(timezone.utc).timestamp()
+    datetime.now(
+        timezone.utc
+    ).timestamp()
 )
-if abs(now - auth_timestamp) > 86400:
-    return False, "Данные Telegram устарели"
-check_items = []
-for key in sorted(data.keys()):
+if abs(
+    now - int(auth_date)
+) > 86400:
+    return False, (
+        "Данные Telegram устарели"
+    )
+values = []
+for key in sorted(data):
     if key == "hash":
         continue
     value = data[key]
     if value is None:
         continue
-    check_items.append(
+    values.append(
         f"{key}={value}"
     )
-data_check_string = "\n".join(check_items)
+check_string = "\n".join(
+    values
+)
 secret_key = hashlib.sha256(
     BOT_TOKEN.encode("utf-8")
 ).digest()
-calculated_hash = hmac.new(
+calculated = hmac.new(
     secret_key,
-    data_check_string.encode("utf-8"),
+    check_string.encode("utf-8"),
     hashlib.sha256,
 ).hexdigest()
 if not hmac.compare_digest(
-    calculated_hash,
+    calculated,
     received_hash,
 ):
-    return False, "Неверная подпись Telegram"
+    return False, (
+        "Неверная подпись Telegram"
+    )
 return True, ""
 
-@app.route(”/auth/telegram”, methods=[“POST”])
+@app.route(
+“/auth/telegram”,
+methods=[“POST”],
+)
 def telegram_auth():
-data = request.get_json(silent=True) or {}
 
-ok, error = verify_telegram_login(data)
+data = (
+    request.get_json(
+        silent=True
+    )
+    or {}
+)
+ok, error = verify_telegram(
+    data
+)
 if not ok:
     return {
         "ok": False,
         "error": error,
     }, 403
 telegram_id = data.get("id")
-if not str(telegram_id).isdigit():
+if not str(
+    telegram_id
+).isdigit():
     return {
         "ok": False,
-        "error": "Неверный Telegram ID",
+        "error":
+            "Неверный Telegram ID",
     }, 400
-telegram_id = int(telegram_id)
-user = get_user(telegram_id)
+telegram_id = int(
+    telegram_id
+)
+user = get_user(
+    telegram_id
+)
 if not user:
     return {
         "ok": False,
-        "error": (
-            "Пользователь не найден в базе ixxy. "
-            "Сначала оформите подписку."
-        ),
+        "error":
+            "Пользователь не найден "
+            "в базе ixxy VPN.",
     }, 404
-if "blocked" in user and user["blocked"]:
-    return {
-        "ok": False,
-        "error": "Ваш аккаунт заблокирован.",
-    }, 403
 session.clear()
-session["telegram_id"] = telegram_id
-session["telegram_username"] = (
-    data.get("username") or ""
+session["telegram_id"] = (
+    telegram_id
 )
 return {
     "ok": True,
     "redirect": "/cabinet",
 }
 
-============================================================
-
-AUTH HELPERS
-
-============================================================
-
 def current_user():
-telegram_id = session.get(“telegram_id”)
 
-if not telegram_id:
+user_id = session.get(
+    "telegram_id"
+)
+if not user_id:
     return None
-try:
-    return get_user(int(telegram_id))
-except Exception:
-    return None
+return get_user(
+    int(user_id)
+)
 
-def require_user():
-user = current_user()
+def admin_access():
 
-if not user:
-    return redirect("/login")
-return user
-
-def is_admin():
-telegram_id = session.get(“telegram_id”)
-
-if not telegram_id:
+user_id = session.get(
+    "telegram_id"
+)
+if not user_id:
     return False
-return int(telegram_id) in ADMIN_IDS
+return int(user_id) in ADMIN_IDS
 
 ============================================================
 
@@ -561,307 +475,214 @@ HTML
 ============================================================
 
 def page(title, body):
-return f”””
-<!doctype html>
 
+return f"""<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport"
-      content="width=device-width,
-      initial-scale=1,
-      maximum-scale=1">
-<meta name="theme-color" content="#07040d">
+content="width=device-width,initial-scale=1">
+<meta name="theme-color"
+content="#08050e">
 <title>{html.escape(title)}</title>
 <style>
-:root {{
-    --bg:#07040d;
-    --card:rgba(25,18,38,.72);
-    --line:rgba(190,130,255,.18);
-    --purple:#9b5cff;
-    --purple2:#c08cff;
-    --text:#fff;
-    --muted:#9c94a8;
-}}
 * {{
-    box-sizing:border-box;
-    -webkit-tap-highlight-color:transparent;
-}}
-html,body {{
-    margin:0;
-    min-height:100%;
-    background:
-        radial-gradient(
-            circle at 50% -10%,
-            rgba(155,92,255,.30),
-            transparent 38%
-        ),
-        linear-gradient(
-            180deg,
-            #0d0716,
-            #07040d 70%
-        );
-    color:var(--text);
-    font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "SF Pro Display",
-        Inter,
-        Arial,
-        sans-serif;
+box-sizing:border-box;
 }}
 body {{
-    min-height:100vh;
+margin:0;
+background:
+radial-gradient(
+circle at top,
+#32145b 0,
+#0c0713 38%,
+#050309 100%
+);
+color:white;
+font-family:
+-apple-system,
+BlinkMacSystemFont,
+Arial,sans-serif;
+min-height:100vh;
 }}
 .wrap {{
-    width:min(100% - 28px, 650px);
-    margin:auto;
-    padding:24px 0 40px;
+width:min(650px,calc(100% - 24px));
+margin:auto;
+padding:22px 0 40px;
 }}
 .header {{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    margin-bottom:24px;
-}}
-.brand {{
-    display:flex;
-    align-items:center;
-    gap:11px;
-    font-weight:900;
-    font-size:20px;
+font-size:21px;
+font-weight:900;
+margin-bottom:18px;
 }}
 .logo {{
-    width:44px;
-    height:44px;
-    display:grid;
-    place-items:center;
-    border-radius:15px;
-    background:
-        linear-gradient(
-            145deg,
-            #a65cff,
-            #5e27a7
-        );
-    box-shadow:
-        0 10px 35px
-        rgba(155,92,255,.28);
-    font-size:21px;
-    font-weight:1000;
+display:inline-flex;
+width:43px;
+height:43px;
+align-items:center;
+justify-content:center;
+border-radius:15px;
+background:
+linear-gradient(135deg,#bd76ff,#6426a7);
+margin-right:9px;
 }}
 .card {{
-    margin-top:14px;
-    padding:21px;
-    border:1px solid var(--line);
-    border-radius:25px;
-    background:var(--card);
-    backdrop-filter:blur(25px);
-    box-shadow:
-        0 20px 70px
-        rgba(0,0,0,.30);
+background:rgba(22,14,33,.82);
+border:1px solid
+rgba(190,120,255,.16);
+border-radius:24px;
+padding:20px;
+margin-top:12px;
+box-shadow:
+0 20px 60px
+rgba(0,0,0,.35);
 }}
 .hero {{
-    text-align:center;
-    padding:30px 10px 20px;
+text-align:center;
+padding:28px 8px;
 }}
 .hero h1 {{
-    margin:0 0 10px;
-    font-size:42px;
-    line-height:1.03;
-    letter-spacing:-2px;
+font-size:38px;
+margin:8px 0;
 }}
-.hero p {{
-    margin:0;
-    color:var(--muted);
-    line-height:1.5;
+.muted {{
+color:#a59bad;
+line-height:1.5;
 }}
 .label {{
-    color:#8f849d;
-    font-size:11px;
-    text-transform:uppercase;
-    letter-spacing:1px;
-    font-weight:800;
+font-size:11px;
+letter-spacing:1px;
+text-transform:uppercase;
+color:#94869e;
+font-weight:800;
 }}
 .status {{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    gap:10px;
+display:flex;
+justify-content:space-between;
+align-items:center;
+gap:10px;
 }}
 .badge {{
-    padding:8px 12px;
-    border-radius:999px;
-    background:rgba(155,92,255,.14);
-    border:1px solid rgba(155,92,255,.20);
-    font-size:12px;
-    font-weight:800;
-}}
-.badge.off {{
-    background:rgba(255,255,255,.06);
-    border-color:rgba(255,255,255,.08);
+padding:8px 12px;
+border-radius:100px;
+background:
+rgba(145,75,255,.15);
+font-size:12px;
+font-weight:800;
 }}
 .big {{
-    margin:18px 0;
-    font-size:34px;
-    font-weight:950;
-    letter-spacing:-1.5px;
+font-size:36px;
+font-weight:950;
+margin:18px 0;
 }}
 .grid {{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:10px;
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:9px;
 }}
 .stat {{
-    padding:15px;
-    border-radius:17px;
-    background:rgba(255,255,255,.045);
-    border:1px solid rgba(255,255,255,.06);
+padding:14px;
+border-radius:16px;
+background:
+rgba(255,255,255,.045);
 }}
 .stat small {{
-    display:block;
-    color:#847b90;
-    margin-bottom:7px;
-    font-size:10px;
-    text-transform:uppercase;
-    letter-spacing:.8px;
-}}
-.stat b {{
-    font-size:16px;
+display:block;
+color:#81778b;
+font-size:10px;
+margin-bottom:6px;
 }}
 .btn {{
-    width:100%;
-    min-height:53px;
-    border:0;
-    border-radius:17px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    text-decoration:none;
-    cursor:pointer;
-    font-weight:900;
-    font-size:14px;
-    background:
-        linear-gradient(
-            135deg,
-            #b56aff,
-            #7735ca
-        );
-    color:white;
-    box-shadow:
-        0 14px 35px
-        rgba(125,53,202,.28);
+display:flex;
+align-items:center;
+justify-content:center;
+width:100%;
+min-height:52px;
+border:0;
+border-radius:16px;
+margin-top:9px;
+background:
+linear-gradient(135deg,#bd70ff,#7031c0);
+color:white;
+text-decoration:none;
+font-weight:900;
+cursor:pointer;
 }}
-.btn.secondary {{
-    margin-top:9px;
-    background:rgba(255,255,255,.055);
-    border:1px solid rgba(255,255,255,.09);
-    box-shadow:none;
-}}
-.btn.white {{
-    background:#fff;
-    color:#08050d;
-    box-shadow:none;
-}}
-.actions {{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:9px;
-    margin-top:9px;
-}}
-.url {{
-    display:flex;
-    gap:7px;
-    padding:6px;
-    border-radius:16px;
-    background:#08050d;
-    border:1px solid rgba(255,255,255,.08);
-}}
-.url input {{
-    min-width:0;
-    flex:1;
-    border:0;
-    outline:0;
-    background:transparent;
-    color:#938a9d;
-    padding:10px;
-    font-size:11px;
-}}
-.copy {{
-    border:0;
-    border-radius:11px;
-    padding:0 13px;
-    background:#fff;
-    color:#000;
-    font-weight:900;
-    cursor:pointer;
+.secondary {{
+background:
+rgba(255,255,255,.055);
+border:1px solid
+rgba(255,255,255,.08);
 }}
 .price {{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    padding:16px;
-    margin-top:9px;
-    border-radius:17px;
-    background:rgba(255,255,255,.045);
-    border:1px solid rgba(255,255,255,.07);
+display:flex;
+justify-content:space-between;
+align-items:center;
+padding:16px;
+margin-top:9px;
+border-radius:16px;
+background:
+rgba(255,255,255,.045);
+color:white;
+text-decoration:none;
 }}
-.price b {{
-    font-size:18px;
+.url {{
+display:flex;
+margin-top:12px;
+background:#08050d;
+border-radius:15px;
+padding:5px;
 }}
-.price span {{
-    color:#aaa0b4;
-    font-size:12px;
+.url input {{
+flex:1;
+min-width:0;
+background:transparent;
+border:0;
+outline:0;
+color:#918799;
+padding:10px;
+font-size:11px;
 }}
-.footer {{
-    text-align:center;
-    color:#62596b;
-    font-size:10px;
-    padding:25px 0 5px;
+.copy {{
+border:0;
+border-radius:11px;
+padding:0 13px;
+font-weight:900;
 }}
 .error {{
-    margin-top:12px;
-    padding:13px;
-    border-radius:15px;
-    background:rgba(255,60,90,.08);
-    border:1px solid rgba(255,60,90,.15);
-    color:#ffb7c2;
-    font-size:12px;
-    line-height:1.45;
+padding:14px;
+border-radius:15px;
+background:
+rgba(255,50,80,.08);
+border:1px solid
+rgba(255,50,80,.15);
+color:#ffb8c3;
+font-size:12px;
+line-height:1.5;
 }}
-.ok {{
-    margin-top:12px;
-    padding:13px;
-    border-radius:15px;
-    background:rgba(100,255,180,.07);
-    border:1px solid rgba(100,255,180,.12);
-    color:#baffd9;
-    font-size:12px;
-}}
-@media(max-width:430px) {{
-    .hero h1 {{
-        font-size:36px;
-    }}
+.footer {{
+text-align:center;
+color:#62596a;
+font-size:10px;
+margin-top:25px;
 }}
 </style>
 </head>
 <body>
 <div class="wrap">
-<header class="header">
-    <div class="brand">
-        <div class="logo">☂</div>
-        <span>ixxy VPN</span>
-    </div>
-</header>
+<div class="header">
+<span class="logo">☂</span>
+ixxy VPN
+</div>
 
 {body}
 
-<footer class="footer">
-    ixxy VPN · Быстро. Приватно. Без лишнего.
-</footer>
+<div class="footer">
+ixxy VPN
+</div>
 </div>
 </body>
-</html>
-"""
+</html>"""
 
 ============================================================
 
@@ -871,95 +692,96 @@ HOME
 
 @app.route(”/”)
 def index():
-user = current_user()
 
-if user:
-    return redirect("/cabinet")
+if current_user():
+    return redirect(
+        "/cabinet"
+    )
 body = f"""
-<section class="hero">
-    <div class="label">PRIVATE VPN</div>
-    <h1>☂️ ixxy VPN</h1>
-    <p>
-        Личный кабинет, подписка и подключение
-        в одном месте.
-    </p>
-</section>
-<div class="card">
-    <div class="label">Личный кабинет</div>
-<h2 style="margin:10px 0 8px">
-    Войдите через Telegram
-</h2>
-<p style="color:#9c94a8;line-height:1.5">
-    Если у вас уже есть аккаунт и подписка
-    ixxy VPN, сайт автоматически найдёт
-    ваш профиль.
+<div class="hero">
+<div class="label">
+PRIVATE VPN
+</div>
+<h1>☂️ ixxy VPN</h1>
+<p class="muted">
+Личный кабинет и подписка
+в одном месте.
 </p>
-<div style="margin-top:20px;text-align:center">
-    <script async
-        src="https://telegram.org/js/telegram-widget.js?22"
-        data-telegram-login="{html.escape(TELEGRAM_BOT_USERNAME)}"
-        data-size="large"
-        data-userpic="false"
-        data-request-access="write"
-        data-onauth="onTelegramAuth(user)">
-    </script>
+</div>
+<div class="card">
+<div class="label">
+Авторизация
+</div>
+<h2>
+Войти через Telegram
+</h2>
+<p class="muted">
+Войдите через Telegram.
+Сайт найдёт ваш существующий
+профиль ixxy VPN по Telegram ID.
+</p>
+<div style="text-align:center;margin-top:20px">
+<script async
+src="https://telegram.org/js/telegram-widget.js?22"
+data-telegram-login="{html.escape(TELEGRAM_BOT_USERNAME)}"
+data-size="large"
+data-userpic="false"
+data-request-access="write"
+data-onauth="onTelegramAuth(user)">
+</script>
 </div>
 </div>
 <div class="card">
-    <div class="label">Тарифы</div>
-<div class="price">
-    <span>1 месяц</span>
-    <b>129 ₽</b>
+<div class="label">
+Тарифы
 </div>
 <div class="price">
-    <span>3 месяца</span>
-    <b>379 ₽</b>
+<span>1 месяц</span>
+<b>129 ₽</b>
 </div>
 <div class="price">
-    <span>6 месяцев</span>
-    <b>659 ₽</b>
+<span>3 месяца</span>
+<b>379 ₽</b>
 </div>
 <div class="price">
-    <span>12 месяцев</span>
-    <b>1089 ₽</b>
+<span>6 месяцев</span>
+<b>659 ₽</b>
+</div>
+<div class="price">
+<span>12 месяцев</span>
+<b>1089 ₽</b>
 </div>
 </div>
 <script>
 function onTelegramAuth(user) {{
-    fetch("/auth/telegram", {{
-        method:"POST",
-        headers:{{
-            "Content-Type":"application/json"
-        }},
-        body:JSON.stringify(user)
-    }})
-    .then(r => r.json())
-    .then(data => {{
-        if (data.ok) {{
-            location.href = data.redirect;
-        }} else {{
-            alert(data.error || "Ошибка авторизации");
-        }}
-    }})
-    .catch(() => {{
-        alert("Ошибка соединения с сайтом");
-    }});
+fetch("/auth/telegram", {{
+method:"POST",
+headers:{{
+"Content-Type":"application/json"
+}},
+body:JSON.stringify(user)
+}})
+.then(r => r.json())
+.then(data => {{
+if(data.ok) {{
+location.href=data.redirect;
+}} else {{
+alert(data.error ||
+"Ошибка авторизации");
+}}
+}})
+.catch(() => {{
+alert("Ошибка соединения");
+}});
 }}
 </script>
 
 “””
 
-return page("ixxy VPN", body)
-
-============================================================
-
-LOGIN
-
-============================================================
-
-@app.route(”/login”)
-def login():
-return redirect(”/”)
+return page(
+    "ixxy VPN",
+    body,
+)
 
 ============================================================
 
@@ -969,162 +791,120 @@ CABINET
 
 @app.route(”/cabinet”)
 def cabinet():
-user = current_user()
 
+user = current_user()
 if not user:
-    return redirect("/login")
-user_id = int(user["user_id"])
-first_name = (
+    return redirect("/")
+user_id = int(
+    user["user_id"]
+)
+active = subscription_active(
+    user
+)
+days = days_left(user)
+until = user.get(
+    "subscription_until"
+)
+link = subscription_url(
+    user_id
+)
+name = (
     user.get("first_name")
     or user.get("username")
     or "Пользователь"
 )
-active = is_active(user)
-until = user.get("subscription_until")
-days = days_left(user)
-tariff = (
-    user.get("subscription")
-    or "ixxy VPN"
-)
-sub_url = subscription_url(user_id)
-status = "Активна" if active else "Неактивна"
 body = f"""
-<section class="hero">
-    <div class="label">Личный кабинет</div>
+<div class="hero">
+<div class="label">
+Личный кабинет
+</div>
 <h1>
-    Привет, {html.escape(str(first_name))}
+Привет, {html.escape(str(name))}
 </h1>
-<p>
-    Ваша подписка ixxy VPN
+<p class="muted">
+☂️ ixxy VPN
 </p>
-</section>
+</div>
 <div class="card">
 <div class="status">
-    <div class="label">
-        Состояние подписки
-    </div>
-    <div class="badge {' ' if active else 'off'}">
-        {'🟢' if active else '🔴'} {status}
-    </div>
+<div class="label">
+Подписка
+</div>
+<div class="badge">
+{'🟢 Активна' if active
+else '🔴 Неактивна'}
+</div>
 </div>
 <div class="big">
-    {days if active else 0} дн.
+{days if active else 0} дн.
 </div>
 <div class="grid">
-    <div class="stat">
-        <small>Тариф</small>
-        <b>{html.escape(str(tariff))}</b>
-    </div>
-    <div class="stat">
-        <small>Действует до</small>
-        <b>{format_date(until)}</b>
-    </div>
+<div class="stat">
+<small>До</small>
+<b>
+{format_date(until)}
+</b>
+</div>
+<div class="stat">
+<small>Telegram ID</small>
+<b>
+{user_id}
+</b>
+</div>
 </div>
 </div>
 <div class="card">
 <div class="label">
-    Подключение
+Подключение
 </div>
-<h2 style="margin:9px 0">
-    Ваша подписка
+<h2>
+Ваша подписка
 </h2>
-<p style="color:#9c94a8;line-height:1.5">
-    Серверы, UUID, Reality и другие
-    технические параметры здесь не отображаются.
+<p class="muted">
+Технические параметры серверов
+здесь не отображаются.
 </p>
 <div class="url">
-    <input
-        id="sub"
-        readonly
-        value="{html.escape(sub_url, quote=True)}"
-    >
-    <button
-        class="copy"
-        onclick="copySub()">
-        COPY
-    </button>
+
+COPY
 </div>
-<a
-    class="btn"
-    style="margin-top:10px"
-    href="https://happ.vpnbypass.click/?url={quote(sub_url, safe='')}"
->
-    Подключить через Happ
-</a>
-<div class="actions">
-    <a
-        class="btn secondary"
-        href="incy://add/{quote(sub_url, safe='')}"
-    >
-        INCY
-    </a>
-    <button
-        class="btn secondary"
-        onclick="copySub()"
-    >
-        Скопировать
-    </button>
-</div>
+
+Подключить через Happ
+Открыть в INCY
 </div>
 <div class="card">
 <div class="label">
-    Продление
+Продление
 </div>
-<h2 style="margin:9px 0">
-    Выберите тариф
-</h2>
-<a class="price"
-   style="text-decoration:none;color:white"
-   href="/buy/30">
-    <span>1 месяц</span>
-    <b>129 ₽</b>
-</a>
-<a class="price"
-   style="text-decoration:none;color:white"
-   href="/buy/90">
-    <span>3 месяца</span>
-    <b>379 ₽</b>
-</a>
-<a class="price"
-   style="text-decoration:none;color:white"
-   href="/buy/180">
-    <span>6 месяцев</span>
-    <b>659 ₽</b>
-</a>
-<a class="price"
-   style="text-decoration:none;color:white"
-   href="/buy/365">
-    <span>12 месяцев</span>
-    <b>1089 ₽</b>
-</a>
+
+1 месяц
+129 ₽
+3 месяца
+379 ₽
+6 месяцев
+659 ₽
+12 месяцев
+1089 ₽
 </div>
 <div class="card">
-<div class="label">
-    Поддержка
-</div>
-<p style="color:#9c94a8;line-height:1.5">
-    Если возникла проблема с подключением,
-    напишите в поддержку.
-</p>
-<a
-    class="btn white"
-    href="{html.escape(TELEGRAM_URL, quote=True)}"
->
-    Открыть поддержку
-</a>
+
+Поддержка
+Выйти
 </div>
 <script>
 function copySub() {{
-    const input = document.getElementById("sub");
-    navigator.clipboard.writeText(input.value)
-        .then(() => alert("Ссылка скопирована"));
+navigator.clipboard.writeText(
+document.getElementById("sub").value
+).then(() => {{
+alert("Ссылка скопирована");
+}});
 }}
 </script>
 
 “””
 
 return page(
-    "Личный кабинет — ixxy VPN",
+    "Кабинет — ixxy VPN",
     body,
 )
 
@@ -1136,257 +916,173 @@ BUY
 
 @app.route(”/buy/int:days”)
 def buy(days):
-user = current_user()
 
+user = current_user()
 if not user:
-    return redirect("/login")
+    return redirect("/")
 if days not in TARIFFS:
-    abort(404)
+    return Response(
+        "Tariff not found",
+        status=404,
+    )
+user_id = int(
+    user["user_id"]
+)
 amount = TARIFFS[days]
-user_id = int(user["user_id"])
 external_id = (
     f"ixxy-{user_id}-"
     f"{days}-"
     f"{secrets.token_hex(8)}"
 )
-callback_url = (
-    f"{PUBLIC_SITE_URL}/cashera/webhook"
-)
-success_url = (
-    f"{PUBLIC_SITE_URL}/cabinet"
-)
-fail_url = (
-    f"{PUBLIC_SITE_URL}/cabinet"
-)
 try:
-    payment = create_payment(
+    payment = cashera_create_payment(
         amount_rub=amount,
         external_id=external_id,
         description=(
             f"ixxy VPN — {days} дней"
         ),
-        callback_url=callback_url,
-        success_url=success_url,
-        fail_url=fail_url,
+        callback_url=(
+            f"{PUBLIC_SITE_URL}"
+            "/cashera/webhook"
+        ),
+        success_url=(
+            f"{PUBLIC_SITE_URL}"
+            "/cabinet"
+        ),
+        fail_url=(
+            f"{PUBLIC_SITE_URL}"
+            "/cabinet"
+        ),
         user_id=user_id,
         days=days,
     )
-except CasheraError as e:
-    error = html.escape(
-        str(e)
+    create_payment(
+        user_id=user_id,
+        amount=amount,
+        days=days,
+        external_id=external_id,
     )
+    url = extract_payment_url(
+        payment
+    )
+    if not url:
+        raise RuntimeError(
+            "CasheRa не вернула "
+            "ссылку на оплату"
+        )
+    return redirect(url)
+except CasheraError as e:
     body = f"""
 <div class="hero">
-    <div class="label">CasheRa</div>
-    <h1>Ошибка оплаты</h1>
-    <p>
-        CasheRa вернула ошибку
-        HTTP {e.status_code}.
-    </p>
+<h1>Ошибка оплаты</h1>
+<p class="muted">
+CasheRa вернула HTTP
+{e.status_code}
+</p>
 </div>
 <div class="card">
-    <div class="error">
-        {error}
-    </div>
-<a
-    class="btn secondary"
-    href="/cabinet"
->
-    Вернуться в кабинет
-</a>
+<div class="error">
+{html.escape(str(e))}
+</div>
+
+Вернуться в кабинет
 </div>
 """
     return page(
-        "Ошибка оплаты",
+        "Ошибка CasheRa",
         body,
     ), 422
 except Exception as e:
     body = f"""
 <div class="hero">
-    <h1>Ошибка</h1>
-    <p>Не удалось создать платеж.</p>
+<h1>Ошибка</h1>
 </div>
 <div class="card">
-    <div class="error">
-        {html.escape(str(e))}
-    </div>
-<a
-    class="btn secondary"
-    href="/cabinet"
->
-    Вернуться
-</a>
+<div class="error">
+{html.escape(str(e))}
+</div>
+
+Вернуться
 </div>
 """
     return page(
         "Ошибка",
         body,
     ), 500
-# --------------------------------------------------------
-# SAVE PAYMENT IN EXISTING BOT PAYMENTS TABLE
-# --------------------------------------------------------
-try:
-    save_payment(
-        user_id,
-        amount,
-        days,
-        external_id,
-    )
-except Exception as e:
-    print(
-        "Payment DB save error:",
-        repr(e),
-    )
-# --------------------------------------------------------
-# EXTRACT PAYMENT URL
-# --------------------------------------------------------
-payment_url = extract_payment_url(
-    payment
-)
-if not payment_url:
-    body = f"""
-<div class="hero">
-    <h1>Платёж создан</h1>
-    <p>
-        Но CasheRa не вернула ссылку
-        на оплату.
-    </p>
-</div>
-<div class="card">
-    <div class="error">
-        Ответ CasheRa:<br><br>
-        {html.escape(
-            json.dumps(
-                payment,
-                ensure_ascii=False,
-                indent=2,
-            )
-        )}
-    </div>
-<a
-    class="btn secondary"
-    href="/cabinet"
->
-    Вернуться
-</a>
-</div>
-"""
-    return page(
-        "Платёж",
-        body,
-    )
-return redirect(payment_url)
 
 def extract_payment_url(data):
-if not isinstance(data, dict):
-return None
 
-possible = [
-    data.get("payment_url"),
-    data.get("checkout_url"),
-    data.get("url"),
-]
-payment = data.get("payment")
-if isinstance(payment, dict):
-    possible.extend([
-        payment.get("payment_url"),
-        payment.get("checkout_url"),
-        payment.get("url"),
-    ])
-for value in possible:
-    if isinstance(value, str) and value.startswith("http"):
-        return value
-return None
-
-============================================================
-
-PAYMENT DATABASE
-
-============================================================
-
-def save_payment(
-user_id,
-amount,
-days,
-external_id,
+if not isinstance(
+    data,
+    dict,
 ):
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = 'payments'
-        """
-    )
-    columns = {
-        row["column_name"]
-        for row in cur.fetchall()
-    }
-    fields = []
-    values = []
-    placeholders = []
-    mapping = [
-        ("user_id", user_id),
-        ("amount", amount),
-        ("days", days),
-        ("external_id", external_id),
-    ]
-    for column, value in mapping:
-        if column in columns:
-            fields.append(column)
-            values.append(value)
-            placeholders.append("%s")
-    if "status" in columns:
-        fields.append("status")
-        values.append("pending")
-        placeholders.append("%s")
-    if not fields:
-        conn.commit()
-        return
-    cur.execute(
-        f"""
-        INSERT INTO payments
-        ({", ".join(fields)})
-        VALUES ({", ".join(placeholders)})
-        """,
-        values,
-    )
-    conn.commit()
-finally:
-    conn.close()
+    return None
+keys = [
+    "payment_url",
+    "checkout_url",
+    "url",
+]
+for key in keys:
+    value = data.get(key)
+    if (
+        isinstance(value, str)
+        and value.startswith("http")
+    ):
+        return value
+for key in (
+    "payment",
+    "transaction",
+    "data",
+):
+    nested = data.get(key)
+    if isinstance(
+        nested,
+        dict,
+    ):
+        result = (
+            extract_payment_url(
+                nested
+            )
+        )
+        if result:
+            return result
+return None
 
 ============================================================
 
-WEBHOOK
+CASHERA WEBHOOK
 
 ============================================================
 
 @app.route(
 “/cashera/webhook”,
-methods=[“POST”]
+methods=[“POST”],
 )
 def cashera_webhook():
 
-if not verify_webhook(request.headers):
+if not verify_webhook(
+    request.headers
+):
     return {
         "ok": False,
         "error": "invalid signature",
     }, 401
-data = request.get_json(
-    silent=True
-) or {}
+data = (
+    request.get_json(
+        silent=True
+    )
+    or {}
+)
 print(
     "CasheRa webhook:",
-    json.dumps(
-        data,
-        ensure_ascii=False,
-    ),
+    data,
 )
-event = data.get("event")
-if event != "transaction.status_updated":
+event = data.get(
+    "event"
+)
+if event != (
+    "transaction.status_updated"
+):
     return {
         "ok": True,
         "ignored": True,
@@ -1394,13 +1090,10 @@ if event != "transaction.status_updated":
 transaction = (
     data.get("transaction")
     or data.get("data")
-    or {}
+    or data
 )
-if not isinstance(transaction, dict):
-    transaction = {}
 status = str(
     transaction.get("status")
-    or data.get("status")
     or ""
 ).lower()
 if status != "paid":
@@ -1409,21 +1102,33 @@ if status != "paid":
         "status": status,
     }
 external_id = (
-    transaction.get("external_id")
-    or data.get("external_id")
+    transaction.get(
+        "external_id"
+    )
 )
 if not external_id:
     return {
         "ok": False,
-        "error": "external_id missing",
+        "error":
+            "external_id missing",
     }, 400
-payment = get_local_payment(
+if payment_processed(
     external_id
+):
+    return {
+        "ok": True,
+        "already_processed": True,
+    }
+payment = (
+    get_payment_by_external_id(
+        external_id
+    )
 )
 if not payment:
     return {
         "ok": False,
-        "error": "payment not found",
+        "error":
+            "payment not found",
     }, 404
 user_id = int(
     payment["user_id"]
@@ -1431,26 +1136,14 @@ user_id = int(
 days = int(
     payment["days"]
 )
-# --------------------------------------------------------
-# ANTI DOUBLE PAYMENT
-# --------------------------------------------------------
-if is_payment_processed(
-    external_id
-):
-    return {
-        "ok": True,
-        "already_processed": True,
-    }
-# --------------------------------------------------------
-# EXTEND USER
-# --------------------------------------------------------
-extend_user(
+amount = int(
+    payment.get("amount")
+    or 0
+)
+extend_subscription(
     user_id,
     days,
 )
-# --------------------------------------------------------
-# MARK PAYMENT
-# --------------------------------------------------------
 mark_payment_paid(
     external_id
 )
@@ -1458,12 +1151,9 @@ mark_payment_processed(
     external_id,
     user_id,
     days,
-    int(payment.get("amount") or 0),
+    amount,
 )
-# --------------------------------------------------------
-# UPDATE SUBSCRIPTION
-# --------------------------------------------------------
-save_subscription_everywhere(
+sync_subscription(
     user_id
 )
 return {
@@ -1473,166 +1163,69 @@ return {
     "days": days,
 }
 
-def get_local_payment(external_id):
-conn = db()
+============================================================
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM payments
-        WHERE external_id = %s
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (external_id,),
-    )
-    return cur.fetchone()
-finally:
-    conn.close()
-
-def is_payment_processed(external_id):
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT 1
-        FROM web_processed_payments
-        WHERE external_id = %s
-        LIMIT 1
-        """,
-        (external_id,),
-    )
-    return cur.fetchone() is not None
-finally:
-    conn.close()
-
-def mark_payment_processed(
-external_id,
-user_id,
-days,
-amount,
-):
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO web_processed_payments
-        (
-            external_id,
-            user_id,
-            days,
-            amount
-        )
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (external_id)
-        DO NOTHING
-        """,
-        (
-            external_id,
-            user_id,
-            days,
-            amount,
-        ),
-    )
-    conn.commit()
-finally:
-    conn.close()
-
-def mark_payment_paid(external_id):
-conn = db()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE payments
-        SET status = 'paid',
-            paid_at = NOW()
-        WHERE external_id = %s
-        """,
-        (external_id,),
-    )
-    conn.commit()
-finally:
-    conn.close()
+SUBSCRIPTION
 
 ============================================================
 
-EXTEND USER
+def parse_token(token):
 
-============================================================
+prefix = SUBSCRIPTION_PREFIX
+if not token.startswith(prefix):
+    return None
+raw = token[
+    len(prefix):
+]
+if not raw.isdigit():
+    return None
+return int(raw)
 
-def extend_user(user_id, days):
-conn = db()
+@app.route(”/sub/”)
+def subscription(token):
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT subscription_until
-        FROM users
-        WHERE user_id = %s
-        FOR UPDATE
-        """,
-        (user_id,),
+user_id = parse_token(
+    token
+)
+if user_id is None:
+    return Response(
+        "Not Found",
+        status=404,
     )
-    row = cur.fetchone()
-    if not row:
-        raise RuntimeError(
-            "Пользователь не найден"
+user = get_user(
+    user_id
+)
+if not user:
+    return Response(
+        "Not Found",
+        status=404,
+    )
+content = user.get(
+    "subscription_content"
+)
+if not content:
+    if subscription_active(
+        user
+    ):
+        content = active_content(
+            user_id,
+            user.get(
+                "subscription_until"
+            ),
         )
-    old_until = parse_datetime(
-        row["subscription_until"]
-    )
-    now = datetime.now(
-        timezone.utc
-    )
-    if old_until and old_until > now:
-        base = old_until
     else:
-        base = now
-    new_until = (
-        base + timedelta(days=days)
-    )
-    columns = get_user_columns()
-    updates = [
-        "subscription_until = %s"
-    ]
-    values = [
-        new_until
-    ]
-    if "subscription" in columns:
-        updates.append(
-            "subscription = %s"
-        )
-        values.append(
-            f"{days} days"
-        )
-    if "subscription_link" in columns:
-        updates.append(
-            "subscription_link = %s"
-        )
-        values.append(
-            subscription_url(user_id)
-        )
-    values.append(user_id)
-    cur.execute(
-        f"""
-        UPDATE users
-        SET {", ".join(updates)}
-        WHERE user_id = %s
-        """,
-        values,
-    )
-    conn.commit()
-finally:
-    conn.close()
+        content = inactive_content()
+response = Response(
+    content,
+    mimetype="text/plain",
+)
+response.headers[
+    "Cache-Control"
+] = (
+    "no-store, no-cache, "
+    "must-revalidate, max-age=0"
+)
+return response
 
 ============================================================
 
@@ -1642,214 +1235,148 @@ ADMIN
 
 @app.route(”/admin”)
 def admin():
-if not is_admin():
-return redirect(”/cabinet”)
 
-conn = db()
-try:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) AS count FROM users"
-    )
-    users_count = cur.fetchone()["count"]
-    cur.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM users
-        WHERE subscription_until > NOW()
-        """
-    )
-    active_count = cur.fetchone()["count"]
-    cur.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM payments
-        WHERE status = 'paid'
-        """
-    )
-    paid_count = cur.fetchone()["count"]
-finally:
-    conn.close()
+if not admin_access():
+    return redirect("/cabinet")
+stats = get_stats()
 body = f"""
 <div class="hero">
-    <div class="label">Администратор</div>
-    <h1>ixxy VPN</h1>
-    <p>Панель управления сайтом</p>
+<div class="label">ADMIN</div>
+<h1>☂️ ixxy</h1>
+<p class="muted">
+Управление сайтом
+</p>
 </div>
 <div class="card">
 <div class="grid">
-    <div class="stat">
-        <small>Пользователи</small>
-        <b>{users_count}</b>
-    </div>
-    <div class="stat">
-        <small>Активные</small>
-        <b>{active_count}</b>
-    </div>
-    <div class="stat">
-        <small>Оплаты</small>
-        <b>{paid_count}</b>
-    </div>
-    <div class="stat">
-        <small>Сервис</small>
-        <b>ONLINE</b>
-    </div>
+<div class="stat">
+<small>Пользователи</small>
+<b>{stats["users"]}</b>
+</div>
+<div class="stat">
+<small>Активные</small>
+<b>{stats["active"]}</b>
+</div>
+<div class="stat">
+<small>Оплаты</small>
+<b>{stats["paid"]}</b>
+</div>
 </div>
 </div>
 <div class="card">
-<div class="label">Пользователь</div>
-<form method="get" action="/admin/user">
-    <input
-        name="id"
-        inputmode="numeric"
-        placeholder="Telegram ID"
-        style="
-            width:100%;
-            padding:15px;
-            margin-top:10px;
-            border-radius:15px;
-            border:1px solid rgba(255,255,255,.1);
-            background:#0b0711;
-            color:white;
-        "
-    >
-    <button
-        class="btn"
-        style="margin-top:9px"
-    >
-        Найти
-    </button>
+<form action="/admin/user"
+method="get">
+<button class="btn">
+Найти пользователя
+</button>
 </form>
 </div>
 """
 return page(
-    "Админка — ixxy VPN",
+    "Админка",
     body,
 )
 
 @app.route(”/admin/user”)
 def admin_user():
-if not is_admin():
-return redirect(”/cabinet”)
 
-raw_id = request.args.get("id", "")
+if not admin_access():
+    return redirect("/cabinet")
+raw_id = request.args.get(
+    "id",
+    "",
+)
 if not raw_id.isdigit():
     return redirect("/admin")
 user_id = int(raw_id)
-user = get_user(user_id)
+user = get_user(
+    user_id
+)
 if not user:
     return page(
         "Пользователь",
         """
-        <div class="hero">
-            <h1>Не найден</h1>
-            <p>Пользователь отсутствует в базе.</p>
-        </div>
-        """,
-    )
-first_name = (
-    user.get("first_name")
-    or user.get("username")
-    or str(user_id)
-)
+<div class="hero">
+<h1>Не найден</h1>
+<p class="muted">
+Пользователь отсутствует в БД.
+</p>
+</div>
+""",
+        )
 body = f"""
 <div class="hero">
-    <div class="label">Пользователь</div>
-    <h1>{html.escape(str(first_name))}</h1>
-    <p>ID: {user_id}</p>
+<div class="label">
+Пользователь
+</div>
+<h1>
+{html.escape(
+str(
+user.get("first_name")
+or user.get("username")
+or user_id
+)
+)}
+</h1>
+<p class="muted">
+ID: {user_id}
+</p>
 </div>
 <div class="card">
 <div class="grid">
-    <div class="stat">
-        <small>Статус</small>
-        <b>
-            {'Активна' if is_active(user)
-             else 'Неактивна'}
-        </b>
-    </div>
-    <div class="stat">
-        <small>До</small>
-        <b>
-            {format_date(
-                user.get("subscription_until")
-            )}
-        </b>
-    </div>
+<div class="stat">
+<small>Статус</small>
+<b>
+{"🟢 Активна"
+if subscription_active(user)
+else "🔴 Неактивна"}
+</b>
 </div>
+<div class="stat">
+<small>До</small>
+<b>
+{format_date(
+user.get(
+"subscription_until"
+)
+)}
+</b>
 </div>
-<div class="card">
-<div class="label">Выдать дни</div>
-<div class="actions">
-    <a
-        class="btn"
-        href="/admin/grant/{user_id}/30"
-    >
-        +30
-    </a>
-    <a
-        class="btn"
-        href="/admin/grant/{user_id}/90"
-    >
-        +90
-    </a>
-</div>
-<div class="actions">
-    <a
-        class="btn secondary"
-        href="/admin/grant/{user_id}/180"
-    >
-        +180
-    </a>
-    <a
-        class="btn secondary"
-        href="/admin/grant/{user_id}/365"
-    >
-        +365
-    </a>
 </div>
 </div>
 <div class="card">
-<a
-    class="btn secondary"
-    href="/admin/sync/{user_id}"
->
-    Синхронизировать подписку
-</a>
+<div class="label">
+Выдать дни
+</div>
+
++30 дней
++90 дней
++180 дней
++365 дней
 </div>
 """
 return page(
-    "Пользователь — ixxy VPN",
+    "Пользователь",
     body,
 )
 
 @app.route(
 “/admin/grant/int:user_id/int:days”
 )
-def admin_grant(user_id, days):
-if not is_admin():
-return redirect(”/cabinet”)
+def admin_grant(
+user_id,
+days,
+):
 
-if days <= 0 or days > 9999:
-    abort(400)
-extend_user(
+if not admin_access():
+    return redirect("/cabinet")
+if days <= 0:
+    return redirect("/admin")
+extend_subscription(
     user_id,
     days,
 )
-save_subscription_everywhere(
-    user_id
-)
-return redirect(
-    f"/admin/user?id={user_id}"
-)
-
-@app.route(
-“/admin/sync/int:user_id”
-)
-def admin_sync(user_id):
-if not is_admin():
-return redirect(”/cabinet”)
-
-save_subscription_everywhere(
+sync_subscription(
     user_id
 )
 return redirect(
@@ -1858,174 +1385,46 @@ return redirect(
 
 ============================================================
 
-SUBSCRIPTION URL
-
-============================================================
-
-def parse_subscription_token(token):
-if not token:
-return None
-
-if not token.startswith(
-    SUBSCRIPTION_PREFIX
-):
-    return None
-raw = token[
-    len(SUBSCRIPTION_PREFIX):
-]
-if not raw.isdigit():
-    return None
-return int(raw)
-
-@app.route(”/s/”)
-def subscription_page(token):
-user_id = parse_subscription_token(
-token
-)
-
-if user_id is None:
-    abort(404)
-user = get_user(user_id)
-if not user:
-    abort(404)
-first_name = (
-    user.get("first_name")
-    or user.get("username")
-    or "Пользователь"
-)
-body = f"""
-<div class="hero">
-    <div class="label">ixxy VPN</div>
-    <h1>
-        {html.escape(str(first_name))}
-    </h1>
-    <p>
-        Персональная подписка
-    </p>
-</div>
-<div class="card">
-<div class="status">
-    <div class="label">
-        Состояние
-    </div>
-    <div class="badge">
-        {'🟢 Активна' if is_active(user)
-         else '🔴 Неактивна'}
-    </div>
-</div>
-<div class="big">
-    {days_left(user) if is_active(user)
-     else 0} дн.
-</div>
-<div class="grid">
-    <div class="stat">
-        <small>Действует до</small>
-        <b>
-            {format_date(
-                user.get("subscription_until")
-            )}
-        </b>
-    </div>
-    <div class="stat">
-        <small>ID</small>
-        <b>{user_id}</b>
-    </div>
-</div>
-</div>
-"""
-return page(
-    "Подписка — ixxy VPN",
-    body,
-)
-
-@app.route(”/sub/”)
-def subscription(token):
-user_id = parse_subscription_token(
-token
-)
-
-if user_id is None:
-    abort(404)
-user = get_user(user_id)
-if not user:
-    abort(404)
-content = user.get(
-    "subscription_content"
-)
-if not content:
-    if is_active(user):
-        content = active_subscription_content(
-            user_id,
-            user.get("subscription_until"),
-        )
-    else:
-        content = inactive_subscription_content()
-response = Response(
-    content,
-    mimetype="text/plain; charset=utf-8",
-)
-response.headers.update(
-    NO_CACHE_HEADERS
-)
-return response
-
-============================================================
-
-HEALTH
-
-============================================================
-
-@app.route(”/health”)
-def health():
-return {
-“service”: “ixxy VPN”,
-“status”: “ok”,
-}
-
-============================================================
-
-LOGOUT
+LOGOUT / HEALTH
 
 ============================================================
 
 @app.route(”/logout”)
 def logout():
+
 session.clear()
-return redirect(”/”)
+return redirect("/")
+
+@app.route(”/health”)
+def health():
+
+return {
+    "service": "ixxy VPN",
+    "status": "ok",
+}
 
 ============================================================
 
-ERROR
-
-============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-return Response(
-“Not Found”,
-status=404,
-mimetype=“text/plain”,
-)
-
-============================================================
-
-START
+STARTUP
 
 ============================================================
 
 try:
-ensure_web_table()
+init_db()
 except Exception as e:
 print(
-“Database initialization warning:”,
+“Database init warning:”,
 repr(e),
 )
 
 if name == “main”:
-port = int(
-os.getenv(“PORT”, “10000”)
-)
 
+port = int(
+    os.getenv(
+        "PORT",
+        "10000",
+    )
+)
 app.run(
     host="0.0.0.0",
     port=port,
