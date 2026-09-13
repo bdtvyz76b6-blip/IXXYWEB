@@ -1,420 +1,614 @@
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
 
-load_dotenv()
 
-DATABASE_URL = os.getenv(“DATABASE_URL”, “”).strip()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
 
 def get_conn():
-if not DATABASE_URL:
-raise RuntimeError(“DATABASE_URL не задан”)
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL не задан")
 
-return psycopg2.connect(
-    DATABASE_URL,
-    cursor_factory=RealDictCursor,
-    connect_timeout=10,
-)
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode="require",
+    )
+
 
 def init_db():
-“””
-Существующую таблицу users бота НЕ создаём и НЕ изменяем.
+    conn = get_conn()
 
-Создаём только техническую таблицу сайта,
-необходимую для защиты от повторной обработки платежа.
-"""
-conn = get_conn()
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_processed_payments (
-            external_id TEXT PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            days INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            processed_at TIMESTAMPTZ DEFAULT NOW()
-        )
-        """
-    )
-    conn.commit()
-finally:
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS web_processed_payments (
+                    external_id TEXT PRIMARY KEY,
+                    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
 
-def get_user(user_id):
-conn = get_conn()
+        conn.commit()
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM users
-        WHERE user_id = %s
-        LIMIT 1
-        """,
-        (int(user_id),),
-    )
-    return cur.fetchone()
-finally:
-    conn.close()
+    finally:
+        conn.close()
+
 
 def get_user_columns():
-conn = get_conn()
+    conn = get_conn()
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'users'
-        """
-    )
-    return {
-        row["column_name"]
-        for row in cur.fetchall()
-    }
-finally:
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'users'
+                """
+            )
+
+            return {
+                row[0]
+                for row in cur.fetchall()
+            }
+
+    finally:
+        conn.close()
+
+
+def get_user(user_id):
+    conn = get_conn()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE user_id = %s
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            # Возвращаем список в привычном для web.py порядке:
+            # user_id, username, first_name, subscription,
+            # subscription_until, ...
+            return tuple(row.values())
+
+    finally:
+        conn.close()
+
+
+def get_user_dict(user_id):
+    conn = get_conn()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE user_id = %s
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+
+            return cur.fetchone()
+
+    finally:
+        conn.close()
+
+
+def get_value(user_id, column):
+    allowed = get_user_columns()
+
+    if column not in allowed:
+        return None
+
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT "{column}"
+                FROM users
+                WHERE user_id = %s
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            return row[0]
+
+    finally:
+        conn.close()
+
 
 def parse_datetime(value):
-if value is None:
-return None
+    if not value:
+        return None
 
-if isinstance(value, datetime):
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
-try:
-    return datetime.fromisoformat(
-        str(value).replace("Z", "+00:00")
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(
+                str(value).replace("Z", "+00:00")
+            )
+        except Exception:
+            return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(
+            tzinfo=timezone.utc
+        )
+
+    return dt
+
+
+def subscription_active(value):
+    dt = parse_datetime(value)
+
+    if not dt:
+        return False
+
+    return dt > datetime.now(timezone.utc)
+
+
+def days_left(value):
+    dt = parse_datetime(value)
+
+    if not dt:
+        return 0
+
+    seconds = (
+        dt - datetime.now(timezone.utc)
+    ).total_seconds()
+
+    if seconds <= 0:
+        return 0
+
+    return max(
+        1,
+        int(seconds / 86400),
     )
-except Exception:
-    return None
 
-def subscription_active(user):
-if not user:
-return False
-
-until = parse_datetime(
-    user.get("subscription_until")
-)
-if not until:
-    return False
-return until > datetime.now(timezone.utc)
-
-def days_left(user):
-if not user:
-return 0
-
-until = parse_datetime(
-    user.get("subscription_until")
-)
-if not until:
-    return 0
-seconds = (
-    until - datetime.now(timezone.utc)
-).total_seconds()
-if seconds <= 0:
-    return 0
-return max(1, int(seconds / 86400))
 
 def format_date(value):
-dt = parse_datetime(value)
+    dt = parse_datetime(value)
 
-if not dt:
-    return "—"
-return dt.strftime("%d.%m.%Y")
+    if not dt:
+        return "—"
+
+    return dt.strftime("%d.%m.%Y")
+
 
 def get_subscription_link(user_id):
-user = get_user(user_id)
+    columns = get_user_columns()
 
-if not user:
-    return None
-return user.get("subscription_link")
+    if "subscription_link" not in columns:
+        return None
+
+    return get_value(
+        user_id,
+        "subscription_link",
+    )
+
 
 def get_subscription_content(user_id):
-user = get_user(user_id)
+    columns = get_user_columns()
 
-if not user:
-    return None
-return user.get("subscription_content")
+    if "subscription_content" not in columns:
+        return None
+
+    return get_value(
+        user_id,
+        "subscription_content",
+    )
+
 
 def update_subscription_data(
-user_id,
-subscription,
-subscription_until,
-subscription_link,
-subscription_content,
+    user_id,
+    subscription_until,
+    content=None,
+    subscription_link=None,
 ):
-columns = get_user_columns()
-
-fields = []
-values = []
-if "subscription" in columns:
-    fields.append("subscription = %s")
-    values.append(subscription)
-if "subscription_until" in columns:
-    fields.append("subscription_until = %s")
-    values.append(subscription_until)
-if "subscription_link" in columns:
-    fields.append("subscription_link = %s")
-    values.append(subscription_link)
-if "subscription_content" in columns:
-    fields.append("subscription_content = %s")
-    values.append(subscription_content)
-if not fields:
-    return False
-conn = get_conn()
-try:
-    cur = conn.cursor()
-    values.append(int(user_id))
-    cur.execute(
-        f"""
-        UPDATE users
-        SET {", ".join(fields)}
-        WHERE user_id = %s
-        """,
-        values,
-    )
-    conn.commit()
-    return cur.rowcount > 0
-finally:
-    conn.close()
-
-def extend_subscription(user_id, days):
-conn = get_conn()
-
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT subscription_until
-        FROM users
-        WHERE user_id = %s
-        FOR UPDATE
-        """,
-        (int(user_id),),
-    )
-    user = cur.fetchone()
-    if not user:
-        raise RuntimeError(
-            "Пользователь не найден"
-        )
-    old_until = parse_datetime(
-        user.get("subscription_until")
-    )
-    now = datetime.now(timezone.utc)
-    if old_until and old_until > now:
-        base = old_until
-    else:
-        base = now
-    new_until = (
-        base + timedelta(days=int(days))
-    )
     columns = get_user_columns()
-    fields = [
-        "subscription_until = %s"
-    ]
-    values = [new_until]
+
+    updates = []
+    values = []
+
     if "subscription" in columns:
-        fields.append(
-            "subscription = %s"
+        updates.append(
+            '"subscription" = %s'
         )
-        values.append("active")
-    cur.execute(
-        f"""
-        UPDATE users
-        SET {", ".join(fields)}
-        WHERE user_id = %s
-        """,
-        values + [int(user_id)],
-    )
-    conn.commit()
-    return new_until
-finally:
-    conn.close()
+        values.append(
+            "active"
+            if subscription_until
+            and subscription_active(
+                subscription_until
+            )
+            else "inactive"
+        )
+
+    if "subscription_until" in columns:
+        updates.append(
+            '"subscription_until" = %s'
+        )
+        values.append(
+            subscription_until
+        )
+
+    if (
+        content is not None
+        and "subscription_content" in columns
+    ):
+        updates.append(
+            '"subscription_content" = %s'
+        )
+        values.append(content)
+
+    if (
+        subscription_link is not None
+        and "subscription_link" in columns
+    ):
+        updates.append(
+            '"subscription_link" = %s'
+        )
+        values.append(subscription_link)
+
+    if not updates:
+        return False
+
+    values.append(int(user_id))
+
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET {", ".join(updates)}
+                WHERE user_id = %s
+                """,
+                tuple(values),
+            )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+    return True
+
+
+def extend_subscription(
+    user_id,
+    days,
+):
+    columns = get_user_columns()
+
+    if "subscription_until" not in columns:
+        raise RuntimeError(
+            "В таблице users нет subscription_until"
+        )
+
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT subscription_until
+                FROM users
+                WHERE user_id = %s
+                FOR UPDATE
+                """,
+                (int(user_id),),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                raise RuntimeError(
+                    "Пользователь не найден"
+                )
+
+            current = parse_datetime(
+                row[0]
+            )
+
+            now = datetime.now(
+                timezone.utc
+            )
+
+            if current and current > now:
+                base = current
+            else:
+                base = now
+
+            new_until = (
+                base
+                + timedelta(days=int(days))
+            )
+
+            updates = [
+                '"subscription_until" = %s'
+            ]
+
+            values = [new_until]
+
+            if "subscription" in columns:
+                updates.append(
+                    '"subscription" = %s'
+                )
+                values.append("active")
+
+            if "pending_days" in columns:
+                updates.append(
+                    '"pending_days" = %s'
+                )
+                values.append(0)
+
+            values.append(int(user_id))
+
+            cur.execute(
+                f"""
+                UPDATE users
+                SET {", ".join(updates)}
+                WHERE user_id = %s
+                """,
+                tuple(values),
+            )
+
+        conn.commit()
+
+        return new_until
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
 
 def create_payment(
-user_id,
-amount,
-days,
-external_id,
+    user_id,
+    amount,
+    days,
+    external_id,
+    status="pending",
 ):
-conn = get_conn()
+    columns = get_user_columns()
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'payments'
-        """
-    )
-    columns = {
-        row["column_name"]
-        for row in cur.fetchall()
-    }
-    fields = []
-    values = []
-    mapping = {
-        "user_id": int(user_id),
-        "amount": int(amount),
-        "days": int(days),
-        "external_id": str(external_id),
-        "status": "pending",
-    }
-    for column, value in mapping.items():
-        if column in columns:
-            fields.append(column)
-            values.append(value)
-    if not fields:
-        raise RuntimeError(
-            "В таблице payments нет подходящих полей"
-        )
-    placeholders = [
-        "%s" for _ in fields
-    ]
-    cur.execute(
-        f"""
-        INSERT INTO payments
-        ({", ".join(fields)})
-        VALUES ({", ".join(placeholders)})
-        """,
-        values,
-    )
-    conn.commit()
-finally:
-    conn.close()
+    conn = get_conn()
 
-def get_payment_by_external_id(external_id):
-conn = get_conn()
+    try:
+        with conn.cursor() as cur:
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM payments
-        WHERE external_id = %s
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (str(external_id),),
-    )
-    return cur.fetchone()
-finally:
-    conn.close()
+            # Проверяем существование payments.
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name = 'payments'
+                )
+                """
+            )
 
-def mark_payment_paid(external_id):
-conn = get_conn()
+            exists = cur.fetchone()[0]
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE payments
-        SET status = 'paid',
-            paid_at = NOW()
-        WHERE external_id = %s
-        """,
-        (str(external_id),),
-    )
-    conn.commit()
-finally:
-    conn.close()
+            if not exists:
+                raise RuntimeError(
+                    "Таблица payments не найдена"
+                )
 
-def payment_processed(external_id):
-conn = get_conn()
+            cur.execute(
+                """
+                INSERT INTO payments
+                    (
+                        user_id,
+                        amount,
+                        days,
+                        external_id,
+                        status,
+                        created_at
+                    )
+                VALUES
+                    (%s, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    int(user_id),
+                    int(amount),
+                    int(days),
+                    str(external_id),
+                    str(status),
+                ),
+            )
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT 1
-        FROM web_processed_payments
-        WHERE external_id = %s
-        LIMIT 1
-        """,
-        (str(external_id),),
-    )
-    return cur.fetchone() is not None
-finally:
-    conn.close()
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def get_payment_by_external_id(
+    external_id,
+):
+    conn = get_conn()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM payments
+                WHERE external_id = %s
+                LIMIT 1
+                """,
+                (str(external_id),),
+            )
+
+            return cur.fetchone()
+
+    finally:
+        conn.close()
+
+
+def mark_payment_paid(
+    external_id,
+):
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE payments
+                SET
+                    status = 'paid',
+                    paid_at = NOW()
+                WHERE external_id = %s
+                """,
+                (str(external_id),),
+            )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def payment_processed(
+    external_id,
+):
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM web_processed_payments
+                WHERE external_id = %s
+                LIMIT 1
+                """,
+                (str(external_id),),
+            )
+
+            return cur.fetchone() is not None
+
+    finally:
+        conn.close()
+
 
 def mark_payment_processed(
-external_id,
-user_id,
-days,
-amount,
+    external_id,
 ):
-conn = get_conn()
+    conn = get_conn()
 
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO web_processed_payments
-        (
-            external_id,
-            user_id,
-            days,
-            amount
-        )
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (external_id)
-        DO NOTHING
-        """,
-        (
-            str(external_id),
-            int(user_id),
-            int(days),
-            int(amount),
-        ),
-    )
-    conn.commit()
-finally:
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO web_processed_payments
+                    (external_id)
+                VALUES
+                    (%s)
+                ON CONFLICT (external_id)
+                DO NOTHING
+                """,
+                (str(external_id),),
+            )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
 
 def get_stats():
-conn = get_conn()
+    conn = get_conn()
+
+    try:
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM users
+                """
+            )
+
+            total_users = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM users
+                WHERE subscription_until IS NOT NULL
+                  AND subscription_until > NOW()
+                """
+            )
+
+            active_users = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM users
+                WHERE subscription_until IS NOT NULL
+                  AND subscription_until <= NOW()
+                """
+            )
+
+            expired_users = cur.fetchone()[0]
+
+            return {
+                "users": total_users,
+                "active": active_users,
+                "expired": expired_users,
+            }
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# INIT
+# ============================================================
 
 try:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) AS count FROM users"
+    init_db()
+except Exception as e:
+    print(
+        f"[database] init warning: {e}"
     )
-    users = cur.fetchone()["count"]
-    cur.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM users
-        WHERE subscription_until > NOW()
-        """
-    )
-    active = cur.fetchone()["count"]
-    try:
-        cur.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM payments
-            WHERE status = 'paid'
-            """
-        )
-        paid = cur.fetchone()["count"]
-    except Exception:
-        paid = 0
-    return {
-        "users": users,
-        "active": active,
-        "paid": paid,
-    }
-finally:
-    conn.close()
