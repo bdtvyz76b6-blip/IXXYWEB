@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>☂️ IXXY VPN — Кабинет</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="page cabinet-page">
+
+    <div class="logo">☂️</div>
+
+    <h1>IXXY VPN</h1>
+
+    <p id="hello" class="subtitle">
+        Загрузка...
+    </p>
+
+    <div class="card">
+
+        <div id="statusBlock" class="status">
+            Загрузка статуса...
+        </div>
+
+        <div class="info-grid">
+
+            <div class="info-item">
+                <span>Статус</span>
+                <strong id="status">—</strong>
+            </div>
+
+            <div class="info-item">
+                <span>Осталось</span>
+                <strong id="days">—</strong>
+            </div>
+
+            <div class="info-item">
+                <span>Активна до</span>
+                <strong id="until">—</strong>
+            </div>
+
+        </div>
+
+        <div class="subscription-box">
+
+            <div class="box-title">
+                Ваша подписка
+            </div>
+
+            <input
+                id="subscriptionUrl"
+                readonly
+            >
+
+            <button
+                class="main-button"
+                onclick="copySubscription()"
+            >
+                Скопировать ссылку
+            </button>
+
+        </div>
+
+        <div class="app-buttons">
+
+            <a
+                id="happButton"
+                class="app-button"
+                target="_blank"
+            >
+                📱 Открыть в Happ
+            </a>
+
+            <a
+                id="incyButton"
+                class="app-button"
+            >
+                ⚡ Открыть в INCY
+            </a>
+
+        </div>
+
+    </div>
+
+
+    <div class="card tariffs">
+
+        <h2>Продлить подписку</h2>
+
+        <button
+            class="tariff"
+            onclick="buy(30)"
+        >
+            <span>
+                <b>30 дней</b>
+                <small>1 месяц</small>
+            </span>
+
+            <strong>129 ₽</strong>
+        </button>
+
+
+        <button
+            class="tariff"
+            onclick="buy(90)"
+        >
+            <span>
+                <b>90 дней</b>
+                <small>3 месяца</small>
+            </span>
+
+            <strong>379 ₽</strong>
+        </button>
+
+
+        <button
+            class="tariff"
+            onclick="buy(180)"
+        >
+            <span>
+                <b>180 дней</b>
+                <small>6 месяцев</small>
+            </span>
+
+            <strong>659 ₽</strong>
+        </button>
+
+
+        <button
+            class="tariff"
+            onclick="buy(365)"
+        >
+            <span>
+                <b>365 дней</b>
+                <small>12 месяцев</small>
+            </span>
+
+            <strong>1089 ₽</strong>
+        </button>
+
+        <div id="buyMessage"></div>
+
+    </div>
+
+
+    <div class="support">
+
+        <a
+            id="supportLink"
+            target="_blank"
+        >
+            💬 Поддержка
+        </a>
+
+        <br><br>
+
+        <a
+            href="#"
+            onclick="logout()"
+        >
+            Выйти
+        </a>
+
+    </div>
+
+</div>
+
+
+<script src="cabinet.js"></script>
+
+</body>
+</html>
