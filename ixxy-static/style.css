@@ -2,6 +2,10 @@
     box-sizing: border-box;
 }
 
+html {
+    min-height: 100%;
+}
+
 body {
     margin: 0;
     min-height: 100vh;
@@ -10,33 +14,52 @@ body {
         -apple-system,
         BlinkMacSystemFont,
         "Segoe UI",
+        Roboto,
+        Arial,
         sans-serif;
 
     background:
         radial-gradient(
-            circle at top,
-            #38205e 0,
-            #160d25 42%,
-            #08050d 100%
+            circle at 50% 0%,
+            #412269 0,
+            #211332 35%,
+            #0b0710 75%,
+            #07050a 100%
         );
 
-    color: white;
+    color: #ffffff;
+}
+
+button,
+input {
+    font: inherit;
+}
+
+a {
+    -webkit-tap-highlight-color: transparent;
 }
 
 .page {
     width: 100%;
     max-width: 460px;
 
+    min-height: 100vh;
+
     margin: 0 auto;
 
-    padding: 70px 20px 30px;
+    padding:
+        60px 20px 35px;
 
     text-align: center;
 }
 
+/* =========================================================
+   LOGO
+   ========================================================= */
+
 .logo {
-    width: 74px;
-    height: 74px;
+    width: 78px;
+    height: 78px;
 
     margin: 0 auto 20px;
 
@@ -44,150 +67,734 @@ body {
     align-items: center;
     justify-content: center;
 
-    border-radius: 24px;
+    border-radius: 25px;
 
-    background: rgba(153, 93, 255, 0.18);
+    background:
+        linear-gradient(
+            145deg,
+            rgba(157, 91, 255, 0.25),
+            rgba(91, 39, 150, 0.15)
+        );
+
+    border:
+        1px solid
+        rgba(190, 137, 255, 0.18);
 
     box-shadow:
-        0 0 40px rgba(145, 73, 255, 0.25);
+        0 0 45px
+        rgba(135, 67, 255, 0.28),
 
-    font-size: 40px;
+        inset 0 0 25px
+        rgba(255,255,255,0.03);
+
+    font-size: 42px;
+
+    user-select: none;
 }
+
+/* =========================================================
+   HEADINGS
+   ========================================================= */
 
 h1 {
     margin: 0;
 
     font-size: 32px;
+    line-height: 1.1;
+
     font-weight: 800;
+
+    letter-spacing: -0.7px;
+}
+
+h2 {
+    font-weight: 750;
 }
 
 .subtitle {
-    margin: 8px 0 28px;
+    margin:
+        9px 0 28px;
 
     color: #aaa0b8;
+
+    font-size: 15px;
 }
 
-.card {
-    padding: 22px;
+/* =========================================================
+   CARD
+   ========================================================= */
 
-    border: 1px solid rgba(255,255,255,0.08);
+.card {
+    width: 100%;
+
+    padding: 22px;
 
     border-radius: 24px;
 
+    border:
+        1px solid
+        rgba(255,255,255,0.08);
+
     background:
-        rgba(24, 15, 37, 0.88);
+        rgba(22, 13, 35, 0.88);
 
     box-shadow:
-        0 20px 70px rgba(0,0,0,0.35);
+        0 24px 80px
+        rgba(0,0,0,0.38),
+
+        inset 0 1px 0
+        rgba(255,255,255,0.025);
+
+    backdrop-filter:
+        blur(18px);
+
+    -webkit-backdrop-filter:
+        blur(18px);
 }
+
+/* =========================================================
+   TABS
+   ========================================================= */
 
 .tabs {
     display: flex;
+
     gap: 8px;
 
     margin-bottom: 20px;
+
+    padding: 4px;
+
+    border-radius: 15px;
+
+    background:
+        rgba(255,255,255,0.035);
 }
 
 .tab {
     flex: 1;
 
+    min-height: 44px;
+
     border: 0;
-    border-radius: 12px;
 
-    padding: 12px;
+    border-radius: 11px;
 
-    color: #aaa0b8;
+    color: #a69cac;
 
-    background: rgba(255,255,255,0.05);
+    background:
+        transparent;
 
     cursor: pointer;
+
+    font-weight: 650;
+
+    transition:
+        0.2s ease;
+}
+
+.tab:hover {
+    color: #ffffff;
+
+    background:
+        rgba(255,255,255,0.04);
 }
 
 .tab.active {
-    color: white;
+    color: #ffffff;
 
     background:
         linear-gradient(
             135deg,
-            #8d4dff,
-            #5b28b5
+            #9755ff,
+            #622cb5
         );
+
+    box-shadow:
+        0 7px 20px
+        rgba(117, 52, 218, 0.25);
 }
+
+/* =========================================================
+   MESSAGE
+   ========================================================= */
+
+#message {
+    min-height: 20px;
+
+    margin-bottom: 10px;
+
+    color: #ff8eaa;
+
+    font-size: 14px;
+
+    line-height: 1.4;
+}
+
+/* =========================================================
+   INPUTS
+   ========================================================= */
 
 input {
     width: 100%;
 
+    min-height: 50px;
+
     margin-bottom: 12px;
 
-    padding: 15px 16px;
+    padding:
+        14px 16px;
 
-    border: 1px solid rgba(255,255,255,0.08);
+    border:
+        1px solid
+        rgba(255,255,255,0.08);
 
     border-radius: 14px;
 
     outline: none;
 
-    background: rgba(255,255,255,0.05);
+    background:
+        rgba(255,255,255,0.045);
 
-    color: white;
+    color: #ffffff;
 
     font-size: 15px;
+
+    transition:
+        border-color 0.2s ease,
+        background 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+input::placeholder {
+    color: #746b7d;
 }
 
 input:focus {
-    border-color: #9255ff;
+    border-color:
+        rgba(154, 87, 255, 0.7);
+
+    background:
+        rgba(255,255,255,0.06);
+
+    box-shadow:
+        0 0 0 3px
+        rgba(142, 73, 245, 0.10);
 }
+
+input[readonly] {
+    color: #aaa0b8;
+
+    cursor: text;
+}
+
+/* =========================================================
+   MAIN BUTTON
+   ========================================================= */
 
 .main-button {
     width: 100%;
 
-    padding: 15px;
+    min-height: 50px;
+
+    padding:
+        14px 18px;
 
     border: 0;
+
     border-radius: 14px;
 
-    color: white;
-
-    font-size: 16px;
-    font-weight: 700;
-
-    cursor: pointer;
+    color: #ffffff;
 
     background:
         linear-gradient(
             135deg,
-            #914fff,
-            #5c2db4
+            #9755ff,
+            #612db7
         );
 
     box-shadow:
-        0 10px 30px rgba(122, 55, 220, 0.25);
+        0 12px 30px
+        rgba(119, 51, 225, 0.25);
+
+    cursor: pointer;
+
+    font-size: 16px;
+    font-weight: 750;
+
+    transition:
+        transform 0.15s ease,
+        box-shadow 0.2s ease,
+        filter 0.2s ease;
+}
+
+.main-button:hover {
+    filter: brightness(1.08);
+
+    box-shadow:
+        0 15px 35px
+        rgba(119, 51, 225, 0.34);
 }
 
 .main-button:active {
-    transform: scale(0.98);
+    transform:
+        scale(0.98);
 }
+
+/* =========================================================
+   HIDDEN
+   ========================================================= */
 
 .hidden {
-    display: none;
+    display: none !important;
 }
 
-#message {
-    min-height: 20px;
+/* =========================================================
+   CABINET
+   ========================================================= */
 
-    margin-bottom: 12px;
+.cabinet-page {
+    max-width: 560px;
+}
 
+/* =========================================================
+   STATUS
+   ========================================================= */
+
+.status {
+    width: 100%;
+
+    padding:
+        15px 16px;
+
+    margin-bottom: 18px;
+
+    border-radius: 15px;
+
+    font-size: 14px;
+
+    font-weight: 700;
+
+    line-height: 1.4;
+}
+
+.status.active {
+    color: #8ff0b0;
+
+    background:
+        rgba(61,220,130,0.09);
+
+    border:
+        1px solid
+        rgba(61,220,130,0.12);
+}
+
+.status.inactive {
     color: #ff8eaa;
+
+    background:
+        rgba(255,80,110,0.09);
+
+    border:
+        1px solid
+        rgba(255,80,110,0.12);
+}
+
+/* =========================================================
+   INFO GRID
+   ========================================================= */
+
+.info-grid {
+    display: grid;
+
+    grid-template-columns:
+        repeat(3, 1fr);
+
+    gap: 10px;
+
+    margin-bottom: 20px;
+}
+
+.info-item {
+    min-width: 0;
+
+    padding:
+        14px 8px;
+
+    border-radius: 15px;
+
+    background:
+        rgba(255,255,255,0.035);
+
+    border:
+        1px solid
+        rgba(255,255,255,0.04);
+}
+
+.info-item span {
+    display: block;
+
+    margin-bottom: 7px;
+
+    color: #8e8498;
+
+    font-size: 12px;
+}
+
+.info-item strong {
+    display: block;
+
+    overflow: hidden;
+
+    color: #ffffff;
+
+    font-size: 14px;
+
+    text-overflow: ellipsis;
+}
+
+/* =========================================================
+   SUBSCRIPTION
+   ========================================================= */
+
+.subscription-box {
+    padding-top: 5px;
+
+    text-align: left;
+}
+
+.box-title {
+    margin-bottom: 10px;
+
+    color: #ffffff;
+
+    font-size: 15px;
+
+    font-weight: 700;
+}
+
+.subscription-box input {
+    margin-bottom: 10px;
+
+    font-size: 12px;
+}
+
+/* =========================================================
+   APP BUTTONS
+   ========================================================= */
+
+.app-buttons {
+    display: grid;
+
+    grid-template-columns:
+        1fr 1fr;
+
+    gap: 10px;
+
+    margin-top: 12px;
+}
+
+.app-button {
+    display: flex;
+
+    align-items: center;
+    justify-content: center;
+
+    min-height: 48px;
+
+    padding:
+        12px 8px;
+
+    border:
+        1px solid
+        rgba(255,255,255,0.06);
+
+    border-radius: 14px;
+
+    background:
+        rgba(255,255,255,0.045);
+
+    color: #ffffff;
+
+    text-decoration: none;
+
+    font-size: 14px;
+
+    font-weight: 650;
+
+    transition:
+        0.2s ease;
+}
+
+.app-button:hover {
+    background:
+        rgba(148,79,255,0.12);
+
+    border-color:
+        rgba(148,79,255,0.22);
+}
+
+.app-button:active {
+    transform:
+        scale(0.98);
+}
+
+/* =========================================================
+   TARIFFS
+   ========================================================= */
+
+.tariffs {
+    margin-top: 16px;
+
+    text-align: left;
+}
+
+.tariffs h2 {
+    margin:
+        0 0 15px;
+
+    font-size: 20px;
+}
+
+.tariff {
+    width: 100%;
+
+    min-height: 68px;
+
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    gap: 15px;
+
+    padding:
+        13px 15px;
+
+    margin-bottom: 10px;
+
+    border:
+        1px solid
+        rgba(255,255,255,0.06);
+
+    border-radius: 16px;
+
+    background:
+        rgba(255,255,255,0.035);
+
+    color: #ffffff;
+
+    cursor: pointer;
+
+    text-align: left;
+
+    transition:
+        background 0.2s ease,
+        border-color 0.2s ease,
+        transform 0.15s ease;
+}
+
+.tariff:hover {
+    background:
+        rgba(145,79,255,0.11);
+
+    border-color:
+        rgba(145,79,255,0.18);
+}
+
+.tariff:active {
+    transform:
+        scale(0.985);
+}
+
+.tariff span {
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 4px;
+}
+
+.tariff b {
+    font-size: 15px;
+}
+
+.tariff small {
+    color: #8f8598;
+
+    font-size: 12px;
+}
+
+.tariff strong {
+    flex-shrink: 0;
+
+    font-size: 17px;
+}
+
+/* =========================================================
+   PAYMENT MESSAGE
+   ========================================================= */
+
+.buy-loading {
+    margin-top: 13px;
+
+    color: #aaa0b8;
+
+    text-align: center;
 
     font-size: 14px;
 }
 
+.buy-error {
+    margin-top: 13px;
+
+    color: #ff8eaa;
+
+    text-align: center;
+
+    font-size: 14px;
+}
+
+/* =========================================================
+   SUPPORT
+   ========================================================= */
+
 .support {
     margin-top: 22px;
+
+    padding-bottom: 10px;
+
+    text-align: center;
+
+    line-height: 1.5;
 }
 
 .support a {
     color: #a66cff;
 
     text-decoration: none;
+
+    font-size: 14px;
+
+    transition:
+        color 0.2s ease;
+}
+
+.support a:hover {
+    color: #c39cff;
+}
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 600px) {
+
+    .page {
+        padding:
+            42px 16px 30px;
+    }
+
+    .logo {
+        width: 70px;
+        height: 70px;
+
+        font-size: 38px;
+    }
+
+    h1 {
+        font-size: 29px;
+    }
+
+    .card {
+        padding: 18px;
+
+        border-radius: 21px;
+    }
+}
+
+
+@media (max-width: 430px) {
+
+    .page {
+        padding:
+            32px 12px 25px;
+    }
+
+    .card {
+        padding: 16px;
+    }
+
+    .info-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .info-item {
+        display: flex;
+
+        align-items: center;
+        justify-content: space-between;
+
+        padding:
+            13px 14px;
+    }
+
+    .info-item span {
+        margin: 0;
+    }
+
+    .app-buttons {
+        grid-template-columns: 1fr;
+    }
+
+    .tariff {
+        min-height: 64px;
+    }
+}
+
+
+/* =========================================================
+   VERY SMALL PHONES
+   ========================================================= */
+
+@media (max-width: 350px) {
+
+    .page {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .card {
+        padding: 14px;
+    }
+
+    h1 {
+        font-size: 27px;
+    }
+
+    .tab {
+        font-size: 13px;
+    }
+
+    .tariff strong {
+        font-size: 15px;
+    }
+}
+
+
+/* =========================================================
+   REDUCED MOTION
+   ========================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+
+        transition: none !important;
+
+        animation: none !important;
+    }
 }
