@@ -14,10 +14,7 @@ return localStorage.getItem(TOKEN_KEY);
 }
 
 function setToken(token) {
-localStorage.setItem(
-TOKEN_KEY,
-token
-);
+localStorage.setItem(TOKEN_KEY, token);
 }
 
 function authHeaders() {
@@ -27,17 +24,13 @@ return {
 “Content-Type”: “application/json”,
 …(token
 ? {
-Authorization:
-“Bearer “ + token
+Authorization: “Bearer “ + token
 }
 : {})
 };
 }
 
-async function apiRequest(
-url,
-options = {}
-) {
+async function apiRequest(url, options = {}) {
 const response = await fetch(
 API_BASE + url,
 {
@@ -73,27 +66,15 @@ return data;
 ========================= */
 
 async function openCabinet() {
-const input =
-document.getElementById(
-“userInput”
-);
-
-const error =
-document.getElementById(
-“error”
-);
-
-const button =
-document.getElementById(
-“continueButton”
-);
+const input = document.getElementById(“userInput”);
+const error = document.getElementById(“error”);
+const button = document.getElementById(“continueButton”);
 
 if (!input || !error) {
 return;
 }
 
-const value =
-input.value.trim();
+const value = input.value.trim();
 
 error.textContent = “”;
 
@@ -105,21 +86,16 @@ return;
 
 if (button) {
 button.disabled = true;
-button.textContent =
-“Проверяем…”;
+button.textContent = “Проверяем…”;
 }
 
 try {
-const data =
-await apiRequest(
+const data = await apiRequest(
 “/api/auth/login”,
 {
 method: “POST”,
 body: JSON.stringify({
-login: value.replace(
-/^@/,
-“”
-)
+login: value.replace(/^@/, “”)
 })
 }
 );
@@ -132,13 +108,9 @@ if (!data.token) {
 setToken(data.token);
 localStorage.setItem(
   USER_KEY,
-  value.replace(
-    /^@/,
-    ""
-  )
+  value.replace(/^@/, "")
 );
-window.location.href =
-  "cabinet.html";
+window.location.href = "cabinet.html";
 
 } catch (errorObject) {
 console.error(
@@ -151,8 +123,7 @@ error.textContent =
   "Пользователь не найден";
 if (button) {
   button.disabled = false;
-  button.textContent =
-    "Продолжить";
+  button.textContent = "Продолжить";
 }
 
 }
@@ -163,28 +134,21 @@ if (button) {
 ========================= */
 
 async function loadCabinet() {
-const token =
-getToken();
+const token = getToken();
 
 if (!token) {
-window.location.href =
-“index.html”;
+window.location.href = “index.html”;
 return;
 }
 
 try {
-const [
-me,
-subscription
-] = await Promise.all([
+const [me, subscription] =
+await Promise.all([
 apiRequest(”/api/me”),
-apiRequest(
-“/api/subscription”
-)
+apiRequest(”/api/subscription”)
 ]);
 
-const user =
-  me.user || me;
+const user = me.user || me;
 const userId =
   user.user_id ??
   user.id ??
@@ -198,48 +162,28 @@ const daysLeft =
     subscription.days_left ?? 0
   );
 const active =
-  Boolean(
-    subscription.active
-  );
+  Boolean(subscription.active);
 const until =
   subscription.subscription_until ??
   null;
 const subscriptionLink =
   subscription.subscription_link ??
   "";
-const displayName =
-  username
-    ? "@" +
-      username.replace(
-        /^@/,
-        ""
-      )
-    : firstName ||
-      String(userId);
+const displayName = username
+  ? "@" + username.replace(/^@/, "")
+  : firstName || String(userId);
 const usernameElement =
-  document.getElementById(
-    "username"
-  );
+  document.getElementById("username");
 const username2Element =
-  document.getElementById(
-    "username2"
-  );
+  document.getElementById("username2");
 const telegramIdElement =
-  document.getElementById(
-    "telegramId"
-  );
+  document.getElementById("telegramId");
 const telegramId2Element =
-  document.getElementById(
-    "telegramId2"
-  );
+  document.getElementById("telegramId2");
 const daysElement =
-  document.getElementById(
-    "days"
-  );
+  document.getElementById("days");
 const untilElement =
-  document.getElementById(
-    "until"
-  );
+  document.getElementById("until");
 const linkElement =
   document.getElementById(
     "subscriptionLink"
@@ -275,17 +219,12 @@ if (linkElement) {
   if (subscriptionLink) {
     linkElement.href =
       subscriptionLink;
-    linkElement.style.display =
-      "";
+    linkElement.style.display = "";
   } else {
-    linkElement.removeAttribute(
-      "href"
-    );
+    linkElement.removeAttribute("href");
   }
 }
-updateSubscriptionStatus(
-  active
-);
+updateSubscriptionStatus(active);
 await loadTariffs();
 
 } catch (errorObject) {
@@ -303,17 +242,12 @@ if (
   errorText.includes("token") ||
   errorText.includes("bearer")
 ) {
-  localStorage.removeItem(
-    TOKEN_KEY
-  );
-  window.location.href =
-    "index.html";
+  localStorage.removeItem(TOKEN_KEY);
+  window.location.href = "index.html";
   return;
 }
 const errorElement =
-  document.getElementById(
-    "error"
-  );
+  document.getElementById("error");
 if (errorElement) {
   errorElement.textContent =
     errorObject.message ||
@@ -327,26 +261,20 @@ if (errorElement) {
 СТАТУС
 ========================= */
 
-function updateSubscriptionStatus(
-active
-) {
+function updateSubscriptionStatus(active) {
 const elements = [
-document.getElementById(
-“status”
-),
+document.getElementById(“status”),
 document.getElementById(
 “subscriptionStatus”
 )
 ].filter(Boolean);
 
-elements.forEach(
-(element) => {
+elements.forEach((element) => {
 element.textContent =
 active
 ? “Активна”
 : “Неактивна”;
-}
-);
+});
 }
 
 /* =========================
@@ -358,14 +286,9 @@ if (!value) {
 return “—”;
 }
 
-const date =
-new Date(value);
+const date = new Date(value);
 
-if (
-Number.isNaN(
-date.getTime()
-)
-) {
+if (Number.isNaN(date.getTime())) {
 return String(value);
 }
 
@@ -386,65 +309,40 @@ year: “numeric”
 async function loadTariffs() {
 try {
 const data =
-await apiRequest(
-“/api/tariffs”
-);
+await apiRequest(”/api/tariffs”);
 
 const tariffs =
   data.tariffs || [];
 const container =
-  document.getElementById(
-    "tariffs"
-  );
+  document.getElementById("tariffs");
 if (!container) {
   return;
 }
 container.innerHTML = "";
-if (
-  !Array.isArray(
-    tariffs
-  )
-) {
+if (!Array.isArray(tariffs)) {
   return;
 }
-tariffs.forEach(
-  (tariff) => {
-    const days =
-      Number(
-        tariff.days ?? 0
-      );
-    const amount =
-      Number(
-        tariff.amount ?? 0
-      );
-    if (
-      !days ||
-      !amount
-    ) {
-      return;
-    }
-    const button =
-      document.createElement(
-        "button"
-      );
-    button.className =
-      "tariff-button";
-    button.type =
-      "button";
-    button.textContent =
-      `${days} дней — ${amount} ₽`;
-    button.addEventListener(
-      "click",
-      () =>
-        buySubscription(
-          days
-        )
-    );
-    container.appendChild(
-      button
-    );
+tariffs.forEach((tariff) => {
+  const days =
+    Number(tariff.days ?? 0);
+  const amount =
+    Number(tariff.amount ?? 0);
+  if (!days || !amount) {
+    return;
   }
-);
+  const button =
+    document.createElement("button");
+  button.className =
+    "tariff-button";
+  button.type = "button";
+  button.textContent =
+    `${days} дней — ${amount} ₽`;
+  button.addEventListener(
+    "click",
+    () => buySubscription(days)
+  );
+  container.appendChild(button);
+});
 
 } catch (errorObject) {
 console.error(
@@ -458,9 +356,7 @@ errorObject
 ОПЛАТА
 ========================= */
 
-async function buySubscription(
-days
-) {
+async function buySubscription(days) {
 if (!days) {
 return;
 }
@@ -515,16 +411,10 @@ await loadCabinet();
 ========================= */
 
 function logout() {
-localStorage.removeItem(
-TOKEN_KEY
-);
+localStorage.removeItem(TOKEN_KEY);
+localStorage.removeItem(USER_KEY);
 
-localStorage.removeItem(
-USER_KEY
-);
-
-window.location.href =
-“index.html”;
+window.location.href = “index.html”;
 }
 
 /* =========================
@@ -533,22 +423,15 @@ window.location.href =
 
 async function findUser() {
 const input =
-document.getElementById(
-“adminUser”
-);
+document.getElementById(“adminUser”);
 
 const result =
-document.getElementById(
-“userResult”
-);
+document.getElementById(“userResult”);
 
 const value =
 input?.value.trim();
 
-if (
-!value ||
-!result
-) {
+if (!value || !result) {
 return;
 }
 
@@ -583,26 +466,11 @@ result.innerHTML = `
 
 function escapeHtml(value) {
 return String(value)
-.replace(
-/&/g,
-“&”
-)
-.replace(
-/</g,
-“<”
-)
-.replace(
-/>/g,
-“>”
-)
-.replace(
-/”/g,
-“"”
-)
-.replace(
-/’/g,
-“'”
-);
+.replace(/&/g, “&”)
+.replace(/</g, “<”)
+.replace(/>/g, “>”)
+.replace(/”/g, “"”)
+.replace(/’/g, “'”);
 }
 
 /* =========================
@@ -612,21 +480,18 @@ return String(value)
 document.addEventListener(
 “DOMContentLoaded”,
 () => {
-
 if (
-  location.pathname.endsWith(
-    "cabinet.html"
-  )
+location.pathname.endsWith(
+“cabinet.html”
+)
 ) {
-  loadCabinet();
+loadCabinet();
 }
-
 }
 );
 
 /* =========================
-ДЕЛАЕМ ФУНКЦИИ ДОСТУПНЫМИ
-ДЛЯ HTML
+ФУНКЦИИ ДЛЯ HTML
 ========================= */
 
 window.openCabinet =
