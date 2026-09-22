@@ -2,45 +2,91 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
   <title>IXXY VPN</title>
-  <link rel="stylesheet" href="style.css">
+  <link
+    rel="stylesheet"
+    href="style.css"
+  >
 </head>
-
 <body>
-
 <div class="page">
   <div class="logo">☂️</div>
-
   <h1>IXXY VPN</h1>
-  <p class="subtitle">Личный кабинет</p>
-
+  <p class="subtitle">
+    Личный кабинет
+  </p>
   <div class="card">
-    <h2>Добро пожаловать</h2>
-    <p class="muted">
-      Введите Telegram ID или username
-    </p>
-
-    <input
-      id="userInput"
-      type="text"
-      placeholder="Telegram ID или @username"
-      autocomplete="off"
-    >
-
-    <button onclick="openCabinet()">
-      Продолжить
-    </button>
-
-    <div id="error" class="error"></div>
+<h2>
+  Добро пожаловать
+</h2>
+<p class="muted">
+  Введите Telegram ID или username
+</p>
+<input
+  id="userInput"
+  type="text"
+  placeholder="Telegram ID или @username"
+  autocomplete="off"
+  autocapitalize="none"
+  spellcheck="false"
+  onkeydown="if(event.key === 'Enter') openCabinet()"
+>
+<button
+  id="continueButton"
+  type="button"
+  onclick="openCabinet()"
+>
+  Продолжить
+</button>
+<div
+  id="error"
+  class="error"
+  role="alert"
+></div>
   </div>
-
   <div class="footer">
     ☂️ IXXY VPN
   </div>
 </div>
-
 <script src="app.js"></script>
-
+<script>
+  /*
+   * Если app.js загрузился правильно,
+   * кнопка использует функцию openCabinet().
+   *
+   * Если файл app.js не загрузился,
+   * показываем понятную ошибку вместо
+   * полного отсутствия реакции.
+   */
+  document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+      const button =
+        document.getElementById(
+          "continueButton"
+        );
+      const error =
+        document.getElementById(
+          "error"
+        );
+      if (
+        typeof window.openCabinet !==
+        "function"
+      ) {
+        if (error) {
+          error.textContent =
+            "Не удалось загрузить приложение. Обновите страницу.";
+        }
+        if (button) {
+          button.disabled = true;
+        }
+      }
+    }
+  );
+</script>
 </body>
 </html>
