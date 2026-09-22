@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IXXY — Админ-панель</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="page admin-page">
+
+  <div class="top">
+    <div class="brand">☂️ IXXY</div>
+    <a href="index.html" class="back">Выйти</a>
+  </div>
+
+  <h1>Админ-панель</h1>
+  <p class="subtitle">Управление пользователями</p>
+
+  <div class="stats">
+
+    <div class="stat">
+      <span>Пользователей</span>
+      <strong id="usersCount">0</strong>
+    </div>
+
+    <div class="stat">
+      <span>Активных</span>
+      <strong id="activeCount">0</strong>
+    </div>
+
+  </div>
+
+  <div class="card">
+
+    <h2>Пользователь</h2>
+
+    <input
+      id="adminUser"
+      type="text"
+      placeholder="Telegram ID"
+    >
+
+    <button onclick="findUser()">
+      Найти
+    </button>
+
+  </div>
+
+  <div id="userResult"></div>
+
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
