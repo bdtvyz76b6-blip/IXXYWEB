@@ -1,107 +1,43 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <title>☂️ IXXY VPN</title>
-
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IXXY VPN</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
 
 <div class="page">
+  <div class="logo">☂️</div>
 
-    <div class="logo">☂️</div>
+  <h1>IXXY VPN</h1>
+  <p class="subtitle">Личный кабинет</p>
 
-    <h1>IXXY VPN</h1>
-
-    <p class="subtitle">
-        Быстрый доступ к вашему VPN
+  <div class="card">
+    <h2>Добро пожаловать</h2>
+    <p class="muted">
+      Введите Telegram ID или username
     </p>
 
-    <div class="card">
+    <input
+      id="userInput"
+      type="text"
+      placeholder="Telegram ID или @username"
+      autocomplete="off"
+    >
 
-        <div class="tabs">
-            <button
-                id="loginTab"
-                class="tab active"
-                onclick="showLogin()"
-            >
-                Войти
-            </button>
+    <button onclick="openCabinet()">
+      Продолжить
+    </button>
 
-            <button
-                id="registerTab"
-                class="tab"
-                onclick="showRegister()"
-            >
-                Регистрация
-            </button>
-        </div>
+    <div id="error" class="error"></div>
+  </div>
 
-        <div id="message"></div>
-
-        <div id="loginForm">
-
-            <input
-                id="login"
-                placeholder="Telegram ID или username"
-                autocomplete="username"
-            >
-
-            <button
-                class="main-button"
-                onclick="login()"
-            >
-                Войти
-            </button>
-
-        </div>
-
-        <div id="registerForm" class="hidden">
-
-            <input
-                id="telegramId"
-                placeholder="Telegram ID"
-                inputmode="numeric"
-            >
-
-            <input
-                id="username"
-                placeholder="Username без @"
-            >
-
-            <input
-                id="firstName"
-                placeholder="Имя"
-            >
-
-            <button
-                class="main-button"
-                onclick="register()"
-            >
-                Создать аккаунт
-            </button>
-
-        </div>
-
-    </div>
-
-    <div class="support">
-        <a
-            id="supportLink"
-            href="#"
-            target="_blank"
-        >
-            Поддержка
-        </a>
-    </div>
-
+  <div class="footer">
+    ☂️ IXXY VPN
+  </div>
 </div>
 
 <script src="app.js"></script>
