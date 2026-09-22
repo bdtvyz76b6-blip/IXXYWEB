@@ -1,0 +1,37 @@
+name: Update servers
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout IXXYWEB
+        uses: actions/checkout@v4
+
+      - name: Download servers.txt
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/bdtvyz76b6-blip/vpn-sub/main/servers.txt \
+            -o servers.txt
+
+      - name: Update website
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add servers.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Auto update servers"
+            git push
+          fi
