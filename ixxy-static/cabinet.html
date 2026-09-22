@@ -1,177 +1,103 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>☂️ IXXY VPN — Кабинет</title>
-
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IXXY — Личный кабинет</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
 
 <div class="page cabinet-page">
 
-    <div class="logo">☂️</div>
+  <div class="top">
+    <div class="brand">☂️ IXXY</div>
+    <a href="index.html" class="back">Выйти</a>
+  </div>
 
-    <h1>IXXY VPN</h1>
+  <div class="profile">
+    <div class="avatar">☂️</div>
 
-    <p id="hello" class="subtitle">
-        Загрузка...
-    </p>
+    <div>
+      <div class="profile-name" id="username">
+        Пользователь
+      </div>
 
-    <div class="card">
+      <div class="profile-id" id="telegramId">
+        Telegram ID
+      </div>
+    </div>
+  </div>
 
-        <div id="statusBlock" class="status">
-            Загрузка статуса...
-        </div>
+  <div class="days-card">
 
-        <div class="info-grid">
-
-            <div class="info-item">
-                <span>Статус</span>
-                <strong id="status">—</strong>
-            </div>
-
-            <div class="info-item">
-                <span>Осталось</span>
-                <strong id="days">—</strong>
-            </div>
-
-            <div class="info-item">
-                <span>Активна до</span>
-                <strong id="until">—</strong>
-            </div>
-
-        </div>
-
-        <div class="subscription-box">
-
-            <div class="box-title">
-                Ваша подписка
-            </div>
-
-            <input
-                id="subscriptionUrl"
-                readonly
-            >
-
-            <button
-                class="main-button"
-                onclick="copySubscription()"
-            >
-                Скопировать ссылку
-            </button>
-
-        </div>
-
-        <div class="app-buttons">
-
-            <a
-                id="happButton"
-                class="app-button"
-                target="_blank"
-            >
-                📱 Открыть в Happ
-            </a>
-
-            <a
-                id="incyButton"
-                class="app-button"
-            >
-                ⚡ Открыть в INCY
-            </a>
-
-        </div>
-
+    <div class="status">
+      <span class="status-dot"></span>
+      Подписка активна
     </div>
 
-
-    <div class="card tariffs">
-
-        <h2>Продлить подписку</h2>
-
-        <button
-            class="tariff"
-            onclick="buy(30)"
-        >
-            <span>
-                <b>30 дней</b>
-                <small>1 месяц</small>
-            </span>
-
-            <strong>129 ₽</strong>
-        </button>
-
-
-        <button
-            class="tariff"
-            onclick="buy(90)"
-        >
-            <span>
-                <b>90 дней</b>
-                <small>3 месяца</small>
-            </span>
-
-            <strong>379 ₽</strong>
-        </button>
-
-
-        <button
-            class="tariff"
-            onclick="buy(180)"
-        >
-            <span>
-                <b>180 дней</b>
-                <small>6 месяцев</small>
-            </span>
-
-            <strong>659 ₽</strong>
-        </button>
-
-
-        <button
-            class="tariff"
-            onclick="buy(365)"
-        >
-            <span>
-                <b>365 дней</b>
-                <small>12 месяцев</small>
-            </span>
-
-            <strong>1089 ₽</strong>
-        </button>
-
-        <div id="buyMessage"></div>
-
+    <div class="days" id="days">
+      0
     </div>
 
-
-    <div class="support">
-
-        <a
-            id="supportLink"
-            target="_blank"
-        >
-            💬 Поддержка
-        </a>
-
-        <br><br>
-
-        <a
-            href="#"
-            onclick="logout()"
-        >
-            Выйти
-        </a>
-
+    <div class="days-title">
+      дней осталось
     </div>
+
+    <div class="until" id="until">
+      —
+    </div>
+
+  </div>
+
+  <div class="actions">
+
+    <a
+      id="subscriptionLink"
+      class="button primary"
+      href="#"
+      target="_blank"
+    >
+      🔗 Открыть подписку
+    </a>
+
+    <button class="button secondary" onclick="buySubscription()">
+      💳 Продлить подписку
+    </button>
+
+  </div>
+
+  <div class="card info-card">
+
+    <div class="info-row">
+      <span>Статус</span>
+      <strong id="status">Активна</strong>
+    </div>
+
+    <div class="info-row">
+      <span>Пользователь</span>
+      <strong id="username2">—</strong>
+    </div>
+
+    <div class="info-row">
+      <span>Telegram ID</span>
+      <strong id="telegramId2">—</strong>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    ☂️ IXXY VPN
+  </div>
 
 </div>
 
+<script src="app.js"></script>
 
-<script src="cabinet.js"></script>
+<script>
+  loadCabinet();
+</script>
 
 </body>
 </html>
