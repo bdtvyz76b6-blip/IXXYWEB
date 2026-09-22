@@ -1,229 +1,96 @@
-/*
- * ВАЖНО:
- * После размещения API на VPS
- * поменяй только API_URL.
- */
+const SUBSCRIPTION_BASE =
+  "https://ixxyweb-1.onrender.com/sub/2ix847xy";
 
-const API_URL = "https://ТВОЙ-API-ДОМЕН";
+function openCabinet() {
+  const input = document.getElementById("userInput");
+  const error = document.getElementById("error");
 
-const SUPPORT_URL = "https://t.me/orelvpntopbot";
+  const value = input.value.trim();
 
+  if (!value) {
+    error.textContent = "Введите Telegram ID или username";
+    return;
+  }
 
-document.getElementById(
-    "supportLink"
-).href = SUPPORT_URL;
+  localStorage.setItem("ixxy_user", value);
 
-
-function showMessage(text, error = true) {
-    const box = document.getElementById("message");
-
-    box.textContent = text;
-
-    box.style.color = error
-        ? "#ff8eaa"
-        : "#8ff0b0";
+  window.location.href =
+    "cabinet.html?id=" + encodeURIComponent(value);
 }
 
 
-function showLogin() {
-    document.getElementById(
-        "loginForm"
-    ).classList.remove("hidden");
+function loadCabinet() {
+  const params = new URLSearchParams(location.search);
 
-    document.getElementById(
-        "registerForm"
-    ).classList.add("hidden");
+  const user =
+    params.get("id") ||
+    localStorage.getItem("ixxy_user");
 
-    document.getElementById(
-        "loginTab"
-    ).classList.add("active");
+  if (!user) {
+    window.location.href = "index.html";
+    return;
+  }
 
-    document.getElementById(
-        "registerTab"
-    ).classList.remove("active");
+  const cleanUser = user.replace("@", "");
 
-    showMessage("");
+  document.getElementById("username").textContent =
+    "@" + cleanUser;
+
+  document.getElementById("username2").textContent =
+    "@" + cleanUser;
+
+  document.getElementById("telegramId").textContent =
+    "Telegram ID: " + cleanUser;
+
+  document.getElementById("telegramId2").textContent =
+    cleanUser;
+
+  /*
+    ВРЕМЕННЫЕ ДАННЫЕ ДЛЯ ДИЗАЙНА.
+
+    Здесь позже подключим реальные данные
+    из твоей базы/API.
+  */
+
+  const days = 30;
+
+  document.getElementById("days").textContent =
+    days;
+
+  document.getElementById("until").textContent =
+    "Действует до —";
+
+  document.getElementById("subscriptionLink").href =
+    SUBSCRIPTION_BASE + cleanUser;
 }
 
 
-function showRegister() {
-    document.getElementById(
-        "loginForm"
-    ).classList.add("hidden");
-
-    document.getElementById(
-        "registerForm"
-    ).classList.remove("hidden");
-
-    document.getElementById(
-        "loginTab"
-    ).classList.remove("active");
-
-    document.getElementById(
-        "registerTab"
-    ).classList.add("active");
-
-    showMessage("");
+function buySubscription() {
+  alert(
+    "Здесь подключим оплату и выбор тарифа."
+  );
 }
 
 
-async function api(path, options = {}) {
+function findUser() {
+  const user =
+    document.getElementById("adminUser").value.trim();
 
-    const token =
-        localStorage.getItem("ixxy_token");
+  if (!user) {
+    return;
+  }
 
-    const headers = {
-        "Content-Type": "application/json",
-        ...(options.headers || {})
-    };
-
-    if (token) {
-        headers.Authorization =
-            `Bearer ${token}`;
-    }
-
-    const response = await fetch(
-        API_URL + path,
-        {
-            ...options,
-            headers
-        }
-    );
-
-    let data;
-
-    try {
-        data = await response.json();
-    } catch {
-        data = {
-            ok: false,
-            error: "Ошибка сервера"
-        };
-    }
-
-    if (!response.ok) {
-        throw new Error(
-            data.error ||
-            "Ошибка запроса"
-        );
-    }
-
-    return data;
-}
-
-
-async function login() {
-
-    const loginValue =
-        document.getElementById(
-            "login"
-        ).value.trim();
-
-    if (!loginValue) {
-        showMessage(
-            "Введите Telegram ID или username"
-        );
-        return;
-    }
-
-    try {
-
-        showMessage(
-            "Выполняется вход...",
-            false
-        );
-
-        const result =
-            await api(
-                "/api/auth/login",
-                {
-                    method: "POST",
-
-                    body: JSON.stringify({
-                        login: loginValue
-                    })
-                }
-            );
-
-        localStorage.setItem(
-            "ixxy_token",
-            result.token
-        );
-
-        window.location.href =
-            "cabinet.html";
-
-    } catch (error) {
-
-        showMessage(
-            error.message
-        );
-    }
-}
-
-
-async function register() {
-
-    const telegramId =
-        document.getElementById(
-            "telegramId"
-        ).value.trim();
-
-    const username =
-        document.getElementById(
-            "username"
-        ).value.trim();
-
-    const firstName =
-        document.getElementById(
-            "firstName"
-        ).value.trim();
-
-    if (!telegramId) {
-        showMessage(
-            "Введите Telegram ID"
-        );
-        return;
-    }
-
-    try {
-
-        showMessage(
-            "Создание аккаунта...",
-            false
-        );
-
-        const result =
-            await api(
-                "/api/auth/register",
-                {
-                    method: "POST",
-
-                    body: JSON.stringify({
-                        telegram_id:
-                            telegramId,
-
-                        username:
-                            username,
-
-                        first_name:
-                            firstName
-                    })
-                }
-            );
-
-        localStorage.setItem(
-            "ixxy_token",
-            result.token
-        );
-
-        window.location.href =
-            "cabinet.html";
-
-    } catch (error) {
-
-        showMessage(
-            error.message
-        );
-    }
+  document.getElementById("userResult").innerHTML = `
+    <div class="card" style="margin-top:15px">
+      <h2>Пользователь найден</h2>
+      <div class="info-row">
+        <span>ID</span>
+        <strong>${user}</strong>
+      </div>
+      <div class="info-row">
+        <span>Статус</span>
+        <strong>Активна</strong>
+      </div>
+    </div>
+  `;
 }
